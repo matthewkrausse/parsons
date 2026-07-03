@@ -4,6 +4,7 @@ from typing import Literal
 from parsons import Table
 from parsons.utilities import check_env
 from parsons.utilities.api_connector import APIConnector
+from parsons.utilities.pagination import PageNumberPaginator
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -35,46 +36,22 @@ class QuickBooksTime:
     def qb_get_request(self, end_point: str, querystring=None):
         """This function handles the pagination of the request"""
 
-        # If no querystring is provided, initialize it as an empty dictionary
-        if querystring is None:
-            querystring = {}
+        querystring = dict(querystring or {})
+        querystring.setdefault("page", 1)
 
-        output_list = []  # This list will hold the results
+        # QuickBooks Time paginates by page number and signals another page
+        # with a top-level "more" boolean. Each page nests its records as
+        # results.<endpoint_key>.<id> -> record, so the values are the rows.
+        output_list = []
+        for response in self.client.paginate(
+            end_point, PageNumberPaginator(more_key="more"), params=querystring
+        ):
+            results = response.json()["results"]
+            endpoint_key = next(iter(results))
+            output_list.extend(results[endpoint_key].values())
 
-        # Handle page parameter
-        page = querystring.get("page", 1)
-
-        more = True  # This flag indicates if there are more pages to fetch
-        while more:
-            # After every 10 pages, log the progress
-            if page % 10 == 0:
-                logger.info(f"Retrieved {len(output_list)} records from {end_point} endpoint.")
-                logger.info(f"Currently on page {page}.")
-
-            # Add the current page to the querystring
-            querystring = {**querystring, **{"page": page}}
-
-            # Send the GET request
-            response = self.client.get_request(end_point, params=querystring)
-
-            # Extract the key of the results
-            endpoint_key = list(response["results"].keys())[0]
-
-            # Extract the records from the results
-            temp_list = list(response["results"][endpoint_key].values())
-
-            # If the response indicates there are more pages,
-            # update the flag and increment the page number
-            more = response.get("more", False)
-            page += 1
-
-            # Add the records from the current page to the output list
-            output_list.extend(temp_list)
-
-        # Log the total number of records retrieved
         logger.info(f"Retrieved {len(output_list)} records from {end_point} endpoint.")
 
-        # Return the results as a Table
         return Table(output_list)
 
     def get_groups(
