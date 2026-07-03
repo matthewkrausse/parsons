@@ -1,14 +1,68 @@
 import logging
+import time
 import urllib.parse
+from collections.abc import Iterator
 from typing import Literal
 
-from requests import request as _request
-from requests.exceptions import HTTPError
+import requests
+import urllib3
+from requests.adapters import HTTPAdapter
 from simplejson.errors import JSONDecodeError
 
 from parsons import Table
+from parsons.utilities.api_exceptions import (
+    AuthenticationError,
+    ParsonsHTTPError,
+    RateLimitError,
+)
+from parsons.utilities.pagination import PageRequest, Paginator
 
 logger = logging.getLogger(__name__)
+
+#: The standard timeout for connectors that opt in: 10s to connect, 120s
+#: between bytes of the response. The read timeout is between-bytes, not
+#: total-duration, so large downloads are unaffected.
+DEFAULT_TIMEOUT = (10, 120)
+
+DEFAULT_RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+#: Only methods that are safe to repeat are retried by default. POST is never
+#: auto-retried: for many APIs Parsons talks to (donations, signups), a
+#: duplicate POST is worse than a failed one.
+DEFAULT_RETRY_METHODS = ("GET", "HEAD", "OPTIONS")
+
+# Sentinel distinguishing "not passed" from an explicit timeout=None.
+_UNSET = object()
+
+# Module-level alias so tests can substitute a no-op sleep.
+_sleep = time.sleep
+
+
+def default_retry(total: int = 3) -> urllib3.util.Retry:
+    """
+    Build the standard Parsons retry policy: exponential backoff on
+    connection errors and transient status codes (429/5xx), honoring the
+    server's Retry-After header on 429s.
+
+    ``raise_on_status=False`` means that when retries are exhausted the final
+    response is returned as usual and ``validate_response()`` raises the same
+    ``HTTPError`` it always has — enabling retries changes no error handling.
+
+    Args:
+        total: int
+            Maximum number of retries. Defaults to 3.
+
+    Returns:
+        urllib3.util.Retry
+    """
+    return urllib3.util.Retry(
+        total=total,
+        backoff_factor=1,
+        status_forcelist=DEFAULT_RETRY_STATUSES,
+        allowed_methods=DEFAULT_RETRY_METHODS,
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
 
 
 class APIConnector:
@@ -32,12 +86,39 @@ class APIConnector:
         data_key: str
             The name of the key in the response json where the data is contained. Required
             if the data is nested in the response json
+        timeout: int or float or tuple
+            Seconds before a request times out, either a single number or a
+            ``(connect, read)`` tuple (see ``DEFAULT_TIMEOUT``). Defaults to ``None``
+            (no timeout) for backwards compatibility.
+        retries: int or urllib3.util.Retry
+            Retry transient failures automatically. Pass an int for the standard
+            policy (see :func:`default_retry`) with that many retries, or a
+            ``urllib3.util.Retry`` for full control. Defaults to ``None`` (no retries).
+        rate_limit_interval: int or float
+            Minimum seconds between requests, for APIs with strict rate limits.
+            Defaults to ``0`` (no throttling).
+        session: requests.Session
+            A session for all requests to be made through. Defaults to a new
+            ``requests.Session``; ``OAuth2APIConnector`` passes its OAuth2 session here.
+
     Returns:
         APIConnector class
 
     """
 
-    def __init__(self, uri, headers=None, auth=None, pagination_key=None, data_key=None):
+    def __init__(
+        self,
+        uri,
+        headers=None,
+        auth=None,
+        pagination_key=None,
+        data_key=None,
+        *,
+        timeout=None,
+        retries=None,
+        rate_limit_interval=0.0,
+        session=None,
+    ):
         # Add a trailing slash if its missing
         if not uri.endswith("/"):
             uri = uri + "/"
@@ -47,6 +128,19 @@ class APIConnector:
         self.auth = auth
         self.pagination_key = pagination_key
         self.data_key = data_key
+        self.timeout = timeout
+        self.rate_limit_interval = rate_limit_interval
+        self._last_request_at = None
+        self.session = session if session is not None else requests.Session()
+
+        if retries is not None:
+            retry = retries if isinstance(retries, urllib3.util.Retry) else default_retry(retries)
+            # Configure the session's existing adapters rather than mounting
+            # fresh ones, so a caller-injected session keeps any custom
+            # adapters (TLS, tuned pools, proxies) it had at http(s)://.
+            for adapter in set(self.session.adapters.values()):
+                if isinstance(adapter, HTTPAdapter):
+                    adapter.max_retries = retry
 
     def request(
         self,
@@ -55,6 +149,9 @@ class APIConnector:
         json=None,
         data=None,
         params=None,
+        headers=None,
+        timeout=_UNSET,
+        **kwargs,
     ):
         """
         Base request using requests libary.
@@ -73,10 +170,13 @@ class APIConnector:
                 The payload of the request object. Use instead of json in some instances.
             params: dict
                 The parameters to append to the url (e.g. http://myapi.com/things?id=1)
-            raise_on_error:
-                If the request yields an error status code (anything above 400), raise an
-                error. In most cases, this should be True, however in some cases, if you
-                are looping through data, you might want to ignore individual failures.
+            headers: dict
+                Headers for this request only, merged over the connector's headers.
+            timeout: int or float or tuple
+                Timeout for this request only, overriding the connector's timeout.
+            **kwargs:
+                Additional arguments passed through to ``requests`` (e.g. ``files=``,
+                ``stream=``).
 
         Returns:
             requests response
@@ -84,15 +184,182 @@ class APIConnector:
         """
         full_url = urllib.parse.urljoin(self.uri, url)
 
-        return _request(
+        merged_headers = self.headers
+        if headers:
+            merged_headers = {**(self.headers or {}), **headers}
+
+        self._throttle()
+
+        return self.session.request(
             req_type,
             full_url,
-            headers=self.headers,
+            headers=merged_headers,
             auth=self.auth,
             json=json,
             data=data,
             params=params,
+            timeout=self.timeout if timeout is _UNSET else timeout,
+            **kwargs,
         )
+
+    def get(self, url, *, params=None, **kwargs) -> requests.Response:
+        """
+        Make a GET request and return the validated response.
+
+        Raises a :class:`~parsons.utilities.api_exceptions.ParsonsHTTPError`
+        subclass on an error status code. Call ``.json()`` on the returned
+        response for the parsed body.
+
+        Args:
+            url: str
+                A relative or absolute url for the api request
+            params: dict
+                The request parameters
+            **kwargs:
+                Additional arguments passed through to :meth:`request`
+        Returns:
+            requests.Response
+
+        """
+        resp = self.request(url, "GET", params=params, **kwargs)
+        self.validate_response(resp)
+        return resp
+
+    def post(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
+        """
+        Make a POST request and return the validated response.
+
+        Args:
+            url: str
+                A relative or absolute url for the api request
+            params: dict
+                The request parameters
+            data: str or file
+                A data object to post
+            json: dict
+                A JSON object to post
+            **kwargs:
+                Additional arguments passed through to :meth:`request`
+        Returns:
+            requests.Response
+
+        """
+        resp = self.request(url, "POST", params=params, data=data, json=json, **kwargs)
+        self.validate_response(resp)
+        return resp
+
+    def put(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
+        """
+        Make a PUT request and return the validated response.
+
+        Args:
+            url: str
+                A relative or absolute url for the api request
+            params: dict
+                The request parameters
+            data: str or file
+                A data object to put
+            json: dict
+                A JSON object to put
+            **kwargs:
+                Additional arguments passed through to :meth:`request`
+        Returns:
+            requests.Response
+
+        """
+        resp = self.request(url, "PUT", params=params, data=data, json=json, **kwargs)
+        self.validate_response(resp)
+        return resp
+
+    def patch(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
+        """
+        Make a PATCH request and return the validated response.
+
+        Args:
+            url: str
+                A relative or absolute url for the api request
+            params: dict
+                The request parameters
+            data: str or file
+                A data object to patch
+            json: dict
+                A JSON object to patch
+            **kwargs:
+                Additional arguments passed through to :meth:`request`
+        Returns:
+            requests.Response
+
+        """
+        resp = self.request(url, "PATCH", params=params, data=data, json=json, **kwargs)
+        self.validate_response(resp)
+        return resp
+
+    def delete(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
+        """
+        Make a DELETE request and return the validated response.
+
+        Args:
+            url: str
+                A relative or absolute url for the api request
+            params: dict
+                The request parameters
+            data: str or file
+                A data object to send
+            json: dict
+                A JSON object to send
+            **kwargs:
+                Additional arguments passed through to :meth:`request`
+        Returns:
+            requests.Response
+
+        """
+        resp = self.request(url, "DELETE", params=params, data=data, json=json, **kwargs)
+        self.validate_response(resp)
+        return resp
+
+    def paginate(
+        self, url, paginator: Paginator, *, params=None, max_pages=None, **kwargs
+    ) -> Iterator[requests.Response]:
+        """
+        Make a GET request and follow the pagination strategy until the last
+        page, yielding each validated response.
+
+        See :mod:`parsons.utilities.pagination` for the available strategies.
+
+        .. code-block:: python
+
+            connector = APIConnector("https://api.example.com/v1/")
+            paginator = LinkHeaderPaginator()
+            members = []
+            for response in connector.paginate("members", paginator):
+                members.extend(response.json()["members"])
+
+        Args:
+            url: str
+                A relative or absolute url for the first page's request
+            paginator: Paginator
+                The pagination strategy, e.g. ``LinkHeaderPaginator()``
+            params: dict
+                The request parameters for the first page
+            max_pages: int
+                If provided, stop after this many pages as a safety valve
+                against endless pagination.
+            **kwargs:
+                Additional arguments passed through to :meth:`request`
+        Returns:
+            Iterator of requests.Response, one per page
+
+        """
+        page = PageRequest(url, params)
+        pages_fetched = 0
+        while page is not None:
+            if max_pages is not None and pages_fetched >= max_pages:
+                logger.warning("Stopping pagination after max_pages=%s pages.", max_pages)
+                return
+            response = self.get(page.url, params=page.params, **kwargs)
+            yield response
+            pages_fetched += 1
+            page = paginator.next_page(response, page)
 
     def get_request(self, url, params=None, return_format="json"):
         """
@@ -259,6 +526,10 @@ class APIConnector:
         Validate that the response is not an error code. If it is, then raise an error
         and display the error message.
 
+        The error raised is a subclass of ``requests.exceptions.HTTPError``
+        (see :mod:`parsons.utilities.api_exceptions`) with the response
+        attached as ``.response``.
+
         Args:
             resp: object
                 A response object
@@ -273,11 +544,18 @@ class APIConnector:
             else:
                 message = f"HTTP error occurred ({resp.status_code})"
 
+            if resp.status_code == 429:
+                error_class = RateLimitError
+            elif resp.status_code == 401:
+                error_class = AuthenticationError
+            else:
+                error_class = ParsonsHTTPError
+
             # Some errors return JSONs with useful info about the error. Return it if exists.
             if self.json_check(resp):
-                raise HTTPError(f"{message}, json: {resp.json()}")
+                raise error_class(f"{message}, json: {resp.json()}", response=resp)
             else:
-                raise HTTPError(message)
+                raise error_class(message, response=resp)
 
     def data_parse(self, resp):
         """
@@ -344,3 +622,13 @@ class APIConnector:
         table = Table(data) if type(data) is list else Table([data])
 
         return table
+
+    def _throttle(self):
+        """Sleep as needed to keep ``rate_limit_interval`` seconds between requests."""
+        if self.rate_limit_interval <= 0:
+            return
+        if self._last_request_at is not None:
+            wait = self._last_request_at + self.rate_limit_interval - time.monotonic()
+            if wait > 0:
+                _sleep(wait)
+        self._last_request_at = time.monotonic()

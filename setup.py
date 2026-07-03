@@ -8,6 +8,9 @@ CORE_DEPENDENCIES = [
     "requests >= 2",
     "requests-oauthlib >= 1",
     "simplejson >= 3.18",
+    # requests' own transport; pinned explicitly because APIConnector's retry
+    # support uses Retry.allowed_methods, added in urllib3 1.26.
+    "urllib3 >= 1.26",
 ]
 EXTRA_DEPENDENCIES = {
     "airtable": ["pyairtable >= 3"],
