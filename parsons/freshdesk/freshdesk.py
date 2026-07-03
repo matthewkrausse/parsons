@@ -1,9 +1,9 @@
 import logging
-import re
 
 from parsons import Table
 from parsons.utilities import check_env
 from parsons.utilities.api_connector import APIConnector
+from parsons.utilities.pagination import LinkHeaderPaginator
 
 logger = logging.getLogger(__name__)
 
@@ -34,22 +34,18 @@ class Freshdesk:
         self.client = APIConnector(self.uri, auth=(self.api_key, "x"))
 
     def _get_request(self, endpoint, params=None):
-        base_params = {"per_page": PAGE_SIZE}
+        request_params = {"per_page": PAGE_SIZE}
 
         if params:
-            base_params.update(params)
+            request_params.update(params)
 
-        r = self.client.request(endpoint, "GET", params=base_params)
-        self.client.validate_response(r)
-        data = r.json()
-
-        # Paginate
-        while "link" in r.headers:
-            logger.info(f"Retrieving another page of {PAGE_SIZE} records.")
-            url = re.search("<(.*)>", r.headers["link"]).group(1)
-            r = self.client.request(url, "GET", params=params)
-            self.client.validate_response(r)
-            data.extend(r.json())
+        # Freshdesk paginates via the RFC 5988 Link header; paginate() follows
+        # the "next" link until the last page, concatenating each page's list.
+        data = []
+        for response in self.client.paginate(
+            endpoint, LinkHeaderPaginator(), params=request_params
+        ):
+            data.extend(response.json())
 
         return data
 
@@ -68,10 +64,7 @@ class Freshdesk:
                 The JSON response from the API.
 
         """
-        url = self.uri + endpoint
-        r = self.client.request(url, "POST", json=data)
-        self.client.validate_response(r)
-        return r.json()
+        return self.client.post(endpoint, json=data).json()
 
     @staticmethod
     def _transform_table(tbl, expand_custom_fields=None):
