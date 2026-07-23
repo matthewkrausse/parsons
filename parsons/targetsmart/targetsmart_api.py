@@ -9,11 +9,12 @@ from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
 import petl
-import requests
 
 from parsons.etl.table import Table
 from parsons.targetsmart.targetsmart_smartmatch import SmartMatch
 from parsons.utilities import check_env
+from parsons.utilities.api_connector import APIConnector
+from parsons.utilities.auth import HeaderTokenAuth
 
 URI = "https://api.targetsmart.com/"
 
@@ -24,10 +25,17 @@ class TargetSmartConnector:
     def __init__(self, api_key):
         self.uri = URI
         self.api_key = check_env.check("TS_API_KEY", api_key)
+        # The API key goes in a custom header with no scheme prefix. Kept as a
+        # dict too because the SmartMatch (S3) flow reads self.connection.headers
+        # directly rather than going through the client.
         self.headers = {"x-api-key": self.api_key}
+        self.client = APIConnector(
+            self.uri,
+            auth=HeaderTokenAuth(self.api_key, header="x-api-key", template="{token}"),
+        )
 
     def request(self, url, args=None, raw=False):
-        r = requests.get(url, headers=self.headers, params=args)
+        r = self.client.get(url, params=args)
 
         # This allows me to deal with data that needs to be munged.
         if raw:
