@@ -2,8 +2,6 @@ import logging
 import time
 from typing import Literal
 
-from requests import Response
-
 from parsons import Table
 from parsons.utilities import check_env
 from parsons.utilities.api_connector import APIConnector
@@ -71,7 +69,7 @@ class ActBlue:
         | None = None,
         date_range_start: str | None = None,
         date_range_end: str | None = None,
-    ) -> Response:
+    ) -> dict:
         """
         POST request to ActBlue API to begin generating the CSV.
 
@@ -95,8 +93,8 @@ class ActBlue:
                 End of date range to withdraw contribution data (exclusive). Ex: '2020-02-01'
 
         Returns:
-            Response of POST request; a successful response includes 'id', a unique identifier for
-            the CSV being generated.
+            Parsed JSON of the POST response; a successful response includes 'id', a unique
+            identifier for the CSV being generated.
 
         """
 
@@ -106,8 +104,7 @@ class ActBlue:
             "date_range_end": date_range_end,
         }
         logger.info(f"Requesting {csv_type} from {date_range_start} up to {date_range_end}.")
-        response = self.client.post_request(url="csvs", json=body)
-        return response
+        return self.client.post("csvs", json=body).json()
 
     def get_download_url(self, csv_id=None):
         """
@@ -122,7 +119,7 @@ class ActBlue:
             the download_url.
 
         """
-        response = self.client.get_request(url=f"csvs/{csv_id}")
+        response = self.client.get(f"csvs/{csv_id}").json()
         if response.get("download_url") is None and response.get("status") != "in_progress":
             raise ValueError("CSV generation failed: %s", response)
 
