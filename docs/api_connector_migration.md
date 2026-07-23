@@ -28,12 +28,12 @@ Legend: ✅ merged · 🔵 POC (this batch) · ⬜ not started · ⛔ out of sco
 |---|---|---|---|---|
 | freshdesk | basic-auth | link-header | ✅ | #3 |
 | quickbooks | header-token | page-number | ✅ | #3 |
-| capitol_canary | basic-auth | next-url-in-body | 🔵 | — |
-| hustle | oauth2 | cursor | 🔵 | — |
-| pdi | expiring-token | page-number | 🔵 | — |
-| crowdtangle | api-key-param | next-url-in-body | 🔵 | — |
-| actblue | basic-auth | polling | 🔵 | — |
-| targetsmart | header-token | none | 🔵 | — |
+| targetsmart | header-token | none | ✅ | #3 |
+| crowdtangle | api-key-param | next-url-in-body | ✅ | #3 |
+| actblue | basic-auth | polling | ✅ | #3 |
+| capitol_canary | basic-auth | next-url-in-body | ⚠️ | see note |
+| hustle | oauth2 | cursor | 🔵 | needs CursorPaginator stop-flag |
+| pdi | expiring-token | page-number | 🔵 | see note |
 | action_builder | header-token | page-number | ⬜ | — |
 | action_network | header-token | page-number | ⬜ | — |
 | action_kit | basic-auth | next-url-in-body | ⬜ | — |
@@ -149,29 +149,53 @@ real connector:
 |---|---|---|---|
 | freshdesk ✅ | keep basic-auth tuple | `LinkHeaderPaginator` | — |
 | quickbooks ✅ | `HeaderTokenAuth` (Bearer) | `PageNumberPaginator(more_key)` | body "more" flag |
-| capitol_canary | keep `HTTPBasicAuth` | `NextUrlPaginator` | cleaner stop condition |
+| targetsmart ✅ | `HeaderTokenAuth` (custom header) | none | the simplest possible migration |
+| crowdtangle ✅ | API key stays a query param | `NextUrlPaginator` (nested) | `rate_limit_interval` |
+| actblue ✅ | keep basic-auth tuple | none — polling loop | verb methods around an async job |
 | hustle | `OAuth2APIConnector` | `CursorPaginator` | deletes hand-rolled token+refresh |
 | pdi | `ExpiringTokenAuth` | `PageNumberPaginator` | login-body token, expiry refresh |
-| crowdtangle | API key stays a query param | `NextUrlPaginator` (nested) | `rate_limit_interval` |
-| actblue | keep basic-auth tuple | none — polling loop | verb methods around an async job |
-| targetsmart | `HeaderTokenAuth` (custom header) | none | the simplest possible migration |
+
+Done so far (branch `api-connector-refactor`): freshdesk, quickbooks, targetsmart,
+crowdtangle, actblue — covering `LinkHeaderPaginator`, `PageNumberPaginator`,
+`NextUrlPaginator`, `HeaderTokenAuth`, keep-basic-auth, api-key-in-query, the
+`rate_limit_interval` config, and the polling escape hatch. Remaining: hustle
+and pdi (see notes) — the two that surfaced complications a POC is meant to
+find.
 
 ### Per-connector notes (POC batch)
 
-- **capitol_canary** — keep `HTTPBasicAuth`; replace `_paginate_request` with
-  `NextUrlPaginator("pagination.next_url")`. Confirm `next_url` is null on the
-  last page (this replaces the fragile legacy `count == per_page` stop).
-- **hustle** — replace `_get_auth_token` / `_refresh_token` with
-  `OAuth2APIConnector` (client-credentials); replace the loop with
-  `CursorPaginator("pagination.cursor", "cursor")`, `data_key="items"`. Note:
-  hustle signals the end via `pagination.hasNextPage == "true"` (a **string**)
-  while the cursor may stay populated, so this migration adds a truthy-aware
-  stop-flag option to `CursorPaginator` (mirroring `PageNumberPaginator.more_key`).
-- **pdi** — wrap the `POST /sessions` login (Username/Password/ApiToken →
-  AccessToken + ExpirationDate) in `ExpiringTokenAuth.fetch_token`, parsing
-  ExpirationDate for the refresh margin;
-  `PageNumberPaginator(page_param="cursor", start_page=1, page_size=LIMIT_MAX, data_key="data")`
-  (the short-final-page heuristic covers the `totalCount` stop).
+- **capitol_canary** — ⚠️ **held back (a POC finding).** It looks like a clean
+  `NextUrlPaginator("pagination.next_url")` case, but its loop actually stops on
+  *page fullness* (`count == per_page`), not on `next_url` being absent, and the
+  test fixture returns a `next_url` even on the last page. Switching to
+  `NextUrlPaginator` would change the stop semantics (and hang that test on the
+  fixture). Resolve before migrating: confirm the **live** API sets
+  `next_url`/`nextPageLink` to null on the last page — if so, adopt
+  `NextUrlPaginator` and make the fixture realistic; if not, keep a page-size
+  stop. `NextUrlPaginator` itself is already proven by `crowdtangle`, so this is
+  not blocking coverage. (phone2action shares this code and inherits the same
+  question.)
+- **hustle** — 🔵 *remaining.* Replace `_get_auth_token` / `_refresh_token`
+  with `OAuth2APIConnector` (client-credentials); replace the loop with
+  `CursorPaginator("pagination.cursor", "cursor")`, `data_key="items"`.
+  Complications this POC surfaces: (1) hustle signals the end via
+  `pagination.hasNextPage == "true"` — a **string**, so the migration must add
+  a *truthy-aware* stop-flag option to `CursorPaginator` (mirroring
+  `PageNumberPaginator.more_key`, but treating `"false"`/`"0"`/`""` as falsy);
+  (2) `self.auth_token` must remain equal to the access token (an existing test
+  asserts it) — set it from `self.client.token["access_token"]`; (3) hustle's
+  `_error_check` treats only 200/201 as success and has a `raise_on_error`
+  flag, so route through `client.request()` + the existing `_error_check`, not
+  the validating verb methods.
+- **pdi** — 🔵 *remaining.* Wrap the `POST /sessions` login
+  (Username/Password/ApiToken → AccessToken + ExpirationDate) in
+  `ExpiringTokenAuth.fetch_token`, parsing ExpirationDate for the refresh
+  margin. Complication: pdi's `_request` has two pagination modes, and the
+  **limit mode uses a variable page size per request**
+  (`min(LIMIT_MAX, total_need - len(data))`), which `PageNumberPaginator`
+  cannot express. Options: use `PageNumberPaginator` for the unbounded mode and
+  keep a small custom loop for the explicit-limit mode, or migrate transport +
+  `ExpiringTokenAuth` only and leave the count-driven loop in place.
 - **crowdtangle** — the key stays a query param (no auth helper);
   `NextUrlPaginator("result.pagination.nextPage")`; set
   `rate_limit_interval=REQUEST_SLEEP` to replace the manual 10s sleep. Data
