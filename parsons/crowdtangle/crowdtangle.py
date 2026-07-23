@@ -1,10 +1,9 @@
 import logging
-import time
-
-from requests import request
 
 from parsons import Table
 from parsons.utilities import check_env
+from parsons.utilities.api_connector import APIConnector
+from parsons.utilities.pagination import NextUrlPaginator
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +29,14 @@ class CrowdTangle:
     def __init__(self, api_key=None):
         self.api_key = check_env.check("CT_API_KEY", api_key)
         self.uri = CT_URI
+        # CrowdTangle's next-page URL lives at result.pagination.nextPage and is
+        # absent on the last page. rate_limit_interval enforces CT's 6 req/min
+        # cap (replacing a manual sleep between pages).
+        self.client = APIConnector(self.uri, rate_limit_interval=REQUEST_SLEEP)
 
     def _base_request(self, endpoint, req_type="GET", args=None):
+        # Preserve the exact request URL this connector has always used (it is
+        # passed absolute, so the base uri is not re-joined onto it).
         url = f"{self.uri}/{endpoint}"
         base_args = {"token": self.api_key, "count": PAGE_SIZE}
 
@@ -39,18 +44,19 @@ class CrowdTangle:
         if args is not None:
             base_args.update(args)
 
-        r = request(req_type, url, params=base_args).json()
-        json = r["result"]
-        keys = list(json.keys())
-        data = json[keys[0]]
-
-        while "nextPage" in list(json["pagination"].keys()):
-            logger.info(f"Retrieving {PAGE_SIZE} rows.")
-            time.sleep(REQUEST_SLEEP)
-            next_url = json["pagination"]["nextPage"]
-            r = request(req_type, next_url).json()
-            json = r["result"]
-            data.extend(json[keys[0]])
+        data = None
+        data_key = None
+        for response in self.client.paginate(
+            url, NextUrlPaginator("result.pagination.nextPage"), params=base_args
+        ):
+            result = response.json()["result"]
+            if data is None:
+                # The first (non-pagination) key holds the records collection.
+                data_key = next(iter(result))
+                data = result[data_key]
+            else:
+                logger.info(f"Retrieving {PAGE_SIZE} rows.")
+                data.extend(result[data_key])
 
         logger.info(f"Retrieved {len(data)} rows.")
 

@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import requests_mock
 
@@ -21,6 +22,26 @@ class TestCrowdTangle(unittest.TestCase):
         posts = self.ct.get_posts()
         exp_tbl = self.ct._unpack(Table(expected_posts["result"]["posts"]))
         assert_matching_tables(posts, exp_tbl)
+
+    # Patch the shared client's sleep so rate_limit_interval doesn't stall the test.
+    @mock.patch("parsons.utilities.api_connector._sleep")
+    @requests_mock.Mocker()
+    def test_get_posts_paginates_via_next_page(self, mock_sleep, m):
+        post = expected_posts["result"]["posts"][0]
+        next_url = "https://api.crowdtangle.com/posts?page=2"
+        page1 = {"result": {"posts": [post], "pagination": {"nextPage": next_url}}}
+        page2 = {"result": {"posts": [post, post], "pagination": {}}}
+        m.get(self.ct.uri + "/posts", json=page1)  # initial request
+        m.get(next_url, json=page2)  # followed from result.pagination.nextPage
+
+        posts = self.ct.get_posts()
+
+        # All three rows across the two pages are concatenated.
+        assert posts.num_rows == 3
+        assert m.call_count == 2
+        # The second request is the absolute nextPage URL, and the sleep fired once.
+        assert m.request_history[1].url == next_url
+        assert mock_sleep.call_count == 1
 
     @requests_mock.Mocker()
     def test_get_leaderboard(self, m):
