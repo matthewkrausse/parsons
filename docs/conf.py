@@ -23,7 +23,15 @@ extensions = [
 master_doc = "index"
 language = "en"
 source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "_template.rst"]
+# api_connector_migration.md is a working migration tracker, not a published
+# site page, so it is not in any toctree; exclude it from the Sphinx build.
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "_template.rst",
+    "api_connector_migration.md",
+]
 templates_path = ["_templates"]
 autodoc_member_order = "bysource"
 
