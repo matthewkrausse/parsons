@@ -259,25 +259,26 @@ except AuthenticationError:       # HTTP 401
 
 ## Testing a connector
 
-Tests mock at the `requests` transport layer with
-[`requests_mock`](https://requests-mock.readthedocs.io/) (the suite-wide
-convention). Internal `Session`s are transparent to it:
+The canonical guide for writing connector tests is
+[`docs/write_tests.rst`](../../docs/write_tests.rst) — follow it for test
+structure (plain pytest functions, per-connector `conftest.py`, canned payloads
+under `data/`) and the "mock the outermost boundary you don't own" rule. For a
+connector built on `APIConnector`, that boundary is the HTTP layer, so tests use
+the [`requests_mock`](https://requests-mock.readthedocs.io/) fixture; internal
+`Session`s are transparent to it:
 
 ```python
-import requests_mock
 from parsons import MyService
 
 
-@requests_mock.Mocker()
-def test_get_widget(m):
-    m.get("https://api.myservice.com/v1/widgets/5", json={"id": 5})
+def test_get_widget(requests_mock):
+    requests_mock.get("https://api.myservice.com/v1/widgets/5", json={"id": 5})
     assert MyService("KEY").get_widget(5)["id"] == 5
 
 
-@requests_mock.Mocker()
-def test_pagination(m):
-    # a response_list drives multiple pages
-    m.get("https://api.myservice.com/v1/widgets", [
+def test_pagination(requests_mock):
+    # a response list drives multiple pages
+    requests_mock.get("https://api.myservice.com/v1/widgets", [
         {"json": {"results": [1, 2]}, "headers": {"Link": '<...&page=2>; rel="next"'}},
         {"json": {"results": [3]}},
     ])

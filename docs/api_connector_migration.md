@@ -123,9 +123,25 @@ paginator signatures.
    test, that is evidence of an unintended behavior change — stop and
    reconcile.
 7. **Add one pagination test**: multiple pages concatenate, and the page /
-   cursor / URL advances correctly.
+   cursor / URL advances correctly. Write it the way `write_tests.rst`
+   prescribes (see below) — for a paginated GET, register a multi-page
+   `requests_mock` response list and assert the concatenated result and that
+   the page/cursor/URL advanced.
 8. **One connector per PR.** Declare it breaking or non-breaking (it should be
    non-breaking).
+
+**How to write the tests:** follow the canonical
+[testing guide](write_tests.rst) — it is the single source of truth for test
+structure (plain pytest functions, per-connector ``conftest.py``, canned
+payloads under ``data/``) and for the "mock the outermost boundary you don't
+own" rule. For the HTTP connectors this migration covers, that boundary is the
+`requests_mock` fixture, so a migration's own request/response assertions and
+its new pagination test both use `requests_mock`. This guide only adds the two
+migration-specific rules above (the regression gate and one pagination test);
+everything else about *how* to write the test lives in `write_tests.rst`. If a
+connector you are migrating still uses the older `unittest.TestCase` style,
+converting it to the standard is the testing effort's job — do not bundle that
+conversion into the API-client migration PR (it would collide with that work).
 
 ### Worked examples
 
@@ -236,6 +252,10 @@ rest migrate in difficulty order, **one connector per PR**:
 
 ## See also
 
+- [`write_tests.rst`](write_tests.rst) — the canonical guide for **how** to
+  write connector tests (structure, mocking rule, test data). This migration
+  guide defers to it for everything except the two migration-specific rules
+  above.
 - [`parsons/utilities/README.md`](../parsons/utilities/README.md) — the HTTP layer reference.
 - The overall refactor plan (sessions/timeouts/retries, the default-on flips,
   and the full wave sequencing) lives with the effort's design notes.
