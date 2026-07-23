@@ -1,12 +1,13 @@
 import logging
-from datetime import datetime, timedelta
 from typing import NoReturn
 
-from requests import Response, request
+from requests import Response
 
 from parsons import Table
 from parsons.hustle.column_map import LEAD_COLUMN_MAP
 from parsons.utilities import check_env, json_format
+from parsons.utilities.oauth_api_connector import OAuth2APIConnector
+from parsons.utilities.pagination import CursorPaginator, PageRequest
 
 logger = logging.getLogger(__name__)
 
@@ -35,41 +36,18 @@ class Hustle:
         self.uri = HUSTLE_URI
         self.client_id = check_env.check("HUSTLE_CLIENT_ID", client_id)
         self.client_secret = check_env.check("HUSTLE_CLIENT_SECRET", client_secret)
-        self.auth_token, self.token_expiration = self._get_auth_token(
-            self.client_id, self.client_secret
+        # OAuth2 client-credentials: the client fetches a token now and
+        # re-fetches automatically when it expires (replacing the hand-rolled
+        # _get_auth_token / _refresh_token flow).
+        self.client = OAuth2APIConnector(
+            uri=self.uri,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            token_url=self.uri + "oauth/token",
+            auto_refresh_url=self.uri + "oauth/token",
+            grant_type="client_credentials",
         )
-
-    def _get_auth_token(self, client_id: str, client_secret: str):
-        """Generate an authorization token."""
-
-        data = {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "grant_type": "client_credentials",
-        }
-
-        resp = request("POST", self.uri + "oauth/token", data=data)
-        resp_json = resp.json()
-        logger.debug(resp_json)
-
-        auth_token = resp_json["access_token"]
-        token_expiration = datetime.now() + timedelta(seconds=resp_json["expires_in"])
-        logger.info("Authentication token generated")
-        return auth_token, token_expiration
-
-    def _refresh_token(self):
-        """Generate new token if current token is exprired.
-
-        Tokens are valid for `expires_in` (7200 by default) seconds.
-        """
-
-        logger.debug("Checking token expiration.")
-
-        if datetime.now() >= self.token_expiration:
-            logger.info("Refreshing authentication token.")
-            self.auth_token, self.token_expiration = self._get_auth_token(
-                self.client_id, self.client_secret
-            )
+        self.auth_token = self.client.token["access_token"]
 
     def _request(
         self,
@@ -79,11 +57,6 @@ class Hustle:
         payload: dict | None = None,
         raise_on_error: bool = True,
     ) -> dict | list:
-        url = self.uri + endpoint
-        self._refresh_token()
-
-        headers = {"Authorization": f"Bearer {self.auth_token}"}
-
         parameters = {}
         if req_type == "GET":
             parameters = {"limit": PAGE_LIMIT}
@@ -91,8 +64,10 @@ class Hustle:
         if args:
             parameters.update(args)
 
-        resp = request(req_type, url, params=parameters, json=payload, headers=headers)
-
+        # Go through the low-level request() (not the validating verb methods)
+        # so Hustle's own _error_check — which treats only 200/201 as success
+        # and honors raise_on_error — stays in charge of error handling.
+        resp = self.client.request(endpoint, req_type, params=parameters, json=payload)
         self._error_check(resp, raise_on_error)
         resp_json = resp.json()
 
@@ -102,13 +77,18 @@ class Hustle:
 
         result = resp_json["items"]
 
-        # Pagination
-        while resp_json["pagination"]["hasNextPage"] == "true":
-            parameters["cursor"] = resp_json["pagination"]["cursor"]
-            resp = request(req_type, url, params=parameters, headers=headers)
+        # Pagination: Hustle keeps returning a cursor and signals the end with a
+        # stringy pagination.hasNextPage flag, so more_key drives the stop.
+        paginator = CursorPaginator(
+            "pagination.cursor", "cursor", more_key="pagination.hasNextPage"
+        )
+        page = PageRequest(endpoint, parameters)
+        next_page = paginator.next_page(resp, page)
+        while next_page is not None:
+            resp = self.client.request(next_page.url, req_type, params=next_page.params)
             self._error_check(resp, raise_on_error)
-            resp_json = resp.json()
-            result += resp_json["items"]
+            result += resp.json()["items"]
+            next_page = paginator.next_page(resp, next_page)
 
         return result
 
