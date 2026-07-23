@@ -55,3 +55,34 @@ def test_init_error(username, password, api_token):
 )
 def test_clean_dict(mock_pdi, obj, exp_obj):
     assert mock_pdi._clean_dict(obj) == exp_obj
+
+
+def test_session_token_fetched_lazily_and_sent(mock_pdi, requests_mock):
+    # Lazy auth: no token request happens at construction.
+    assert not any(r.url.endswith("/sessions") for r in requests_mock.request_history)
+
+    requests_mock.get("https://apiqa.bluevote.com/thing", json={"foo": "bar"})
+    result = mock_pdi._request("https://apiqa.bluevote.com/thing")
+
+    assert result == {"foo": "bar"}
+    session_calls = [r for r in requests_mock.request_history if r.url.endswith("/sessions")]
+    assert len(session_calls) == 1  # fetched once, on first use
+    assert requests_mock.last_request.headers["Authorization"] == "Bearer AccessToken"
+
+
+def test_request_paginates_with_cursor(mock_pdi, requests_mock):
+    # Unbounded read: follow the 1-indexed cursor until len(data) == totalCount.
+    requests_mock.get(
+        "https://apiqa.bluevote.com/things",
+        [
+            {"json": {"data": [{"id": 1}, {"id": 2}], "totalCount": 3}},
+            {"json": {"data": [{"id": 3}], "totalCount": 3}},
+        ],
+    )
+
+    result = mock_pdi._request("https://apiqa.bluevote.com/things")
+
+    assert result.num_rows == 3
+    assert [row["id"] for row in result] == [1, 2, 3]
+    # The second page request advances the cursor to 2.
+    assert requests_mock.last_request.qs["cursor"] == ["2"]
