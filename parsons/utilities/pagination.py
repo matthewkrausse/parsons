@@ -57,6 +57,18 @@ def _dig(data: Any, dotted_key: str) -> Any:
     return current
 
 
+def _is_truthy(value: Any) -> bool:
+    """Interpret a "there are more pages" flag.
+
+    Handles APIs that return the flag as a real boolean as well as those that
+    return a stringy boolean; ``False``, ``None``, ``0``, ``""``, and the
+    strings ``"false"``/``"0"``/``"no"`` (any case) all mean "no more pages".
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0", "no")
+    return bool(value)
+
+
 class LinkHeaderPaginator:
     """Follow the next-page URL in the RFC 5988 ``Link`` response header.
 
@@ -107,18 +119,27 @@ class CursorPaginator:
     Args:
         cursor_key: str
             Dotted key path to the cursor within the response JSON, e.g.
-            ``"cursors.after"``. Pagination stops when the key is missing or
-            its value is empty/null.
+            ``"cursors.after"``.
         cursor_param: str
             The query parameter name the cursor is sent back in.
+        more_key: str
+            Optional dotted key path to a "there are more pages" flag. When
+            set, it is the stop condition (evaluated truthy-aware, so a stringy
+            ``"false"`` stops); use it for APIs that keep returning a cursor
+            even on the last page. When omitted, pagination stops as soon as
+            the cursor is missing or empty.
     """
 
-    def __init__(self, cursor_key: str, cursor_param: str):
+    def __init__(self, cursor_key: str, cursor_param: str, more_key: str | None = None):
         self.cursor_key = cursor_key
         self.cursor_param = cursor_param
+        self.more_key = more_key
 
     def next_page(self, response: requests.Response, request: PageRequest) -> PageRequest | None:
-        cursor = _dig(response.json(), self.cursor_key)
+        body = response.json()
+        if self.more_key is not None and not _is_truthy(_dig(body, self.more_key)):
+            return None
+        cursor = _dig(body, self.cursor_key)
         if not cursor:
             return None
         return PageRequest(request.url, {**(request.params or {}), self.cursor_param: cursor})
@@ -174,7 +195,7 @@ class PageNumberPaginator:
     def next_page(self, response: requests.Response, request: PageRequest) -> PageRequest | None:
         body = response.json()
         if self.more_key is not None:
-            if not _dig(body, self.more_key):
+            if not _is_truthy(_dig(body, self.more_key)):
                 return None
         else:
             items = _dig(body, self.data_key) if self.data_key else body

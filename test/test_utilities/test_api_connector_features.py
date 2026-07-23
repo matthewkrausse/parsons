@@ -318,6 +318,27 @@ class TestPaginate:
         assert second.qs["after"] == ["abc"]
         assert second.qs["per_page"] == ["50"]
 
+    def test_cursor_pagination_stops_on_string_more_flag(self, requests_mock, connector):
+        # Some APIs (e.g. Hustle) keep returning a cursor and signal the end
+        # with a stringy boolean; more_key must treat "false" as falsy.
+        requests_mock.get(
+            BASE_URI + "things",
+            [
+                {"json": {"data": [1], "pagination": {"cursor": "c1", "hasNextPage": "true"}}},
+                {"json": {"data": [2], "pagination": {"cursor": "c2", "hasNextPage": "false"}}},
+            ],
+        )
+        pages = list(
+            connector.paginate(
+                "things",
+                CursorPaginator("pagination.cursor", "cursor", more_key="pagination.hasNextPage"),
+            )
+        )
+        # Stops after the page whose hasNextPage is the string "false", even
+        # though that page still carries a cursor.
+        assert len(pages) == 2
+        assert requests_mock.request_history[1].qs["cursor"] == ["c1"]
+
     def test_page_number_pagination_stops_on_empty_page(self, requests_mock, connector):
         requests_mock.get(
             BASE_URI + "things",
@@ -439,3 +460,19 @@ class TestOAuth2TokenExpiryRetry:
         api_posts = [r for r in requests_mock.request_history if r.url == BASE_URI + "things"]
         assert len(api_posts) == 1
         assert api_posts[0].headers["Authorization"] == "Bearer fresh"
+
+
+class TestIsTruthy:
+    """The stringy-boolean interpreter behind the paginators' more_key."""
+
+    @pytest.mark.parametrize("value", [True, 1, "true", "True", "yes", "1", "anything"])
+    def test_truthy(self, value):
+        from parsons.utilities.pagination import _is_truthy
+
+        assert _is_truthy(value) is True
+
+    @pytest.mark.parametrize("value", [False, 0, None, "", "false", "False", "0", "no", "  "])
+    def test_falsy(self, value):
+        from parsons.utilities.pagination import _is_truthy
+
+        assert _is_truthy(value) is False
