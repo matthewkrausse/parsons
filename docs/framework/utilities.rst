@@ -9,6 +9,20 @@ API Connector
    :inherited-members:
    :members:
 
+API Exceptions
+==============
+
+.. automodule:: parsons.utilities.api_exceptions
+   :inherited-members:
+   :members:
+
+Auth
+====
+
+.. automodule:: parsons.utilities.auth
+   :inherited-members:
+   :members:
+
 Check ENV
 =========
 
@@ -129,6 +143,13 @@ OAuth API Connector
 ===================
 
 .. automodule:: parsons.utilities.oauth_api_connector
+   :inherited-members:
+   :members:
+
+Pagination
+==========
+
+.. automodule:: parsons.utilities.pagination
    :inherited-members:
    :members:
 
