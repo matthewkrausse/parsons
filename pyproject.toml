@@ -35,9 +35,10 @@ dependencies = [
     "requests >= 2.0",
     "requests-oauthlib >= 1.0",
     "simplejson >= 3.18",
-    # requests' own transport; pinned explicitly because APIConnector's retry
-    # support uses Retry.allowed_methods, added in urllib3 1.26.
-    "urllib3 >= 1.26",
+    # requests' own transport, pinned explicitly because APIConnector's retry
+    # support depends on it (Retry.allowed_methods). Floor matches the geocode
+    # extra and stays clear of urllib3 versions with known advisories.
+    "urllib3 >= 2.6.3",
 ]
 
 [project.optional-dependencies]
