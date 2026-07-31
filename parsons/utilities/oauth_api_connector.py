@@ -104,6 +104,7 @@ class OAuth2APIConnector(APIConnector):
         is detected client-side before anything is sent, so the retry is safe
         for all request types.
         """
+        last_request_at = self._last_request_at
         try:
             return super().request(
                 url,
@@ -117,6 +118,10 @@ class OAuth2APIConnector(APIConnector):
         except TokenExpiredError:
             self.token = self._fetch_token()
             self.client.token = self.token
+            # The expired-token attempt sent nothing (oauthlib raised before any
+            # bytes left), so restore the throttle clock to avoid a second,
+            # spurious rate_limit_interval wait on the retry.
+            self._last_request_at = last_request_at
             return super().request(
                 url,
                 req_type,

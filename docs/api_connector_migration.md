@@ -29,7 +29,7 @@ Legend: ✅ merged · 🔵 POC (this batch) · ⬜ not started · ⛔ out of sco
 | freshdesk | basic-auth | link-header | ✅ | #3 |
 | quickbooks | header-token | page-number | ✅ | #3 |
 | targetsmart | header-token | none | ✅ | #3 |
-| crowdtangle | api-key-param | next-url-in-body | ✅ | #3 |
+| crowdtangle | api-key-param | next-url-in-body | ⛔ | removed upstream (#1845) |
 | actblue | basic-auth | polling | ✅ | #3 |
 | hustle | oauth2 | cursor | ✅ | #3 |
 | pdi | expiring-token | page-number | ✅ | #3 |
@@ -166,18 +166,23 @@ real connector:
 | freshdesk ✅ | keep basic-auth tuple | `LinkHeaderPaginator` | — |
 | quickbooks ✅ | `HeaderTokenAuth` (Bearer) | `PageNumberPaginator(more_key)` | body "more" flag |
 | targetsmart ✅ | `HeaderTokenAuth` (custom header) | none | the simplest possible migration |
-| crowdtangle ✅ | API key stays a query param | `NextUrlPaginator` (nested) | `rate_limit_interval` |
+| ~~crowdtangle~~ ⛔ | ~~API key stays a query param~~ | ~~`NextUrlPaginator`~~ | removed upstream (#1845) before this landed |
 | actblue ✅ | keep basic-auth tuple | none — polling loop | verb methods around an async job |
 | hustle ✅ | `OAuth2APIConnector` | `CursorPaginator` (more_key) | deletes hand-rolled token+refresh |
 | pdi ✅ | `ExpiringTokenAuth` | count-driven cursor (kept) | login-body token, expiry refresh |
 
-The POC batch is complete on branch `api-connector-refactor`: 7 connectors
-covering all four paginators (`LinkHeaderPaginator`, `PageNumberPaginator`,
-`NextUrlPaginator`, `CursorPaginator`), all three auth helpers
-(`HeaderTokenAuth`, `ExpiringTokenAuth`, `OAuth2APIConnector`) plus
-keep-basic-auth and api-key-in-query, the `rate_limit_interval` config, and the
-polling escape hatch. hustle also drove the additive `CursorPaginator.more_key`
-stop-flag. Only capitol_canary was held back (see note).
+The POC batch landed on branch `api-connector-refactor`: **6** connectors
+(crowdtangle was dropped when upstream removed that connector in #1845). They
+cover `LinkHeaderPaginator`, `PageNumberPaginator`, and `CursorPaginator`, all
+three auth helpers (`HeaderTokenAuth`, `ExpiringTokenAuth`,
+`OAuth2APIConnector`) plus keep-basic-auth, the `rate_limit_interval` config,
+and the polling escape hatch. hustle also drove the additive
+`CursorPaginator.more_key` stop-flag. **`NextUrlPaginator` lost its only POC
+connector with crowdtangle's removal** — it is exercised by unit tests
+(`test/test_utilities/test_api_connector_features.py`) but has no production
+connector yet; its first adopter will be one of the next-url connectors
+(ngpvan, nation_builder, mobilize_america, or capitol_canary — see note). Only
+capitol_canary was otherwise held back.
 
 ### Per-connector notes (POC batch)
 
@@ -189,9 +194,11 @@ stop-flag. Only capitol_canary was held back (see note).
   fixture). Resolve before migrating: confirm the **live** API sets
   `next_url`/`nextPageLink` to null on the last page — if so, adopt
   `NextUrlPaginator` and make the fixture realistic; if not, keep a page-size
-  stop. `NextUrlPaginator` itself is already proven by `crowdtangle`, so this is
-  not blocking coverage. (phone2action shares this code and inherits the same
-  question.)
+  stop. `NextUrlPaginator` has unit-test coverage but no production connector
+  yet (crowdtangle, its original POC, was removed upstream), so a next-url
+  connector — capitol_canary once resolved, or ngpvan/nation_builder/
+  mobilize_america — will be its first real adopter. (phone2action shares
+  capitol_canary's code and inherits the same question.)
 - **hustle** — ✅ *done.* Replaced `_get_auth_token` / `_refresh_token`
   with `OAuth2APIConnector` (client-credentials); replace the loop with
   `CursorPaginator("pagination.cursor", "cursor")`, `data_key="items"`.
@@ -213,10 +220,10 @@ stop-flag. Only capitol_canary was held back (see note).
   cannot express. Options: use `PageNumberPaginator` for the unbounded mode and
   keep a small custom loop for the explicit-limit mode, or migrate transport +
   `ExpiringTokenAuth` only and leave the count-driven loop in place.
-- **crowdtangle** — the key stays a query param (no auth helper);
-  `NextUrlPaginator("result.pagination.nextPage")`; set
-  `rate_limit_interval=REQUEST_SLEEP` to replace the manual 10s sleep. Data
-  lives under `result.<dynamic-first-key>`.
+- **crowdtangle** — ⛔ removed upstream (#1845) before this migration landed;
+  the pattern it would have demonstrated (API-key-in-query +
+  `NextUrlPaginator("result.pagination.nextPage")` + `rate_limit_interval`)
+  is retained here only as a reference for the next such connector.
 - **actblue** — swap `post_request` / `get_request` for `post` / `get`
   returning a `Response`; **keep** `poll_for_download_url` (no paginator
   applies); the final CSV is still fetched via `Table.from_csv(download_url)`.

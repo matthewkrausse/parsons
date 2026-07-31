@@ -111,12 +111,11 @@ class PDI(
         args = self._clean_dict(args) if args else args
         post_data = self._clean_dict(post_data) if post_data else post_data
         # The client (via ExpiringTokenAuth) attaches the bearer token and
-        # refreshes it as needed; raise_for_status preserves PDI's error handling.
+        # refreshes it as needed, and request() validates by default — raising
+        # on any error status before returning here.
         res = self.client.request(url, req_type, json=post_data, params=args)
         logger.debug(f"{res.url} - {res.status_code}")
         logger.debug(res.request.body)
-
-        res.raise_for_status()
 
         if not res.text:
             return None

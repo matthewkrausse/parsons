@@ -47,8 +47,16 @@ class Hustle:
             auto_refresh_url=self.uri + "oauth/token",
             grant_type="client_credentials",
         )
-        # Preserved for backwards compatibility; the OAuth2 client owns refresh.
-        self.auth_token = self.client.token["access_token"]
+
+    @property
+    def auth_token(self) -> str:
+        """The current OAuth2 access token (kept live by the OAuth2 client).
+
+        Preserved for backwards compatibility; the OAuth2 client owns fetching
+        and refreshing, so this always reflects the token in use rather than a
+        construction-time snapshot.
+        """
+        return self.client.token["access_token"]
 
     def _request(
         self,

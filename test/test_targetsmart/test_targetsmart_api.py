@@ -104,6 +104,21 @@ def test_api_key_sent_as_custom_header(ts_api, output_list, requests_mock):
     assert requests_mock.last_request.headers["x-api-key"] == "FAKEKEY"
 
 
+def test_error_status_raises(ts_api, requests_mock):
+    # Post-migration, requests go through APIConnector which validates by
+    # default, so an error status surfaces as a ParsonsHTTPError rather than
+    # being parsed as if it were a normal body.
+    from parsons.utilities.api_exceptions import ParsonsHTTPError
+
+    requests_mock.get(
+        ts_api.connection.uri + "person/data-enhance",
+        status_code=500,
+        json={"error": "boom"},
+    )
+    with pytest.raises(ParsonsHTTPError):
+        ts_api.data_enhance("IL-12568678")
+
+
 def test_data_search_id_type_not_found(ts_api, output_list, requests_mock):
     json = {
         "input": {"search_id": "IL-12568670", "search_id_type": "invalid_search_id_type"},
