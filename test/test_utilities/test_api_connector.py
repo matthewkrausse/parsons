@@ -98,9 +98,9 @@ class TestRequest:
 
     def test_error_status_does_not_raise(self, requests_mock, connector):
         m = requests_mock
-        # request() itself never validates; callers do.
+        # request(raise_on_error=False) returns the error response instead of raising.
         m.get(BASE_URI_SLASH + "things", status_code=500)
-        resp = connector.request("things", "GET")
+        resp = connector.request("things", "GET", raise_on_error=False)
         assert resp.status_code == 500
 
 
@@ -191,11 +191,11 @@ class TestPutRequest:
         m.put(BASE_URI_SLASH + "things/1", status_code=204)
         assert connector.put_request("things/1") == 204
 
-    def test_202_not_in_default_success_codes(self, requests_mock, connector):
+    def test_202_in_default_success_codes(self, requests_mock, connector):
         m = requests_mock
-        # PUT (unlike POST) does not include 202 in its defaults: returns None.
+        # Success codes are unified across verbs to [200, 201, 202, 204].
         m.put(BASE_URI_SLASH + "things/1", status_code=202)
-        assert connector.put_request("things/1") is None
+        assert connector.put_request("things/1") == 202
 
     def test_raises_http_error_on_error_status(self, requests_mock, connector):
         m = requests_mock
@@ -245,22 +245,22 @@ class TestValidateResponse:
     def test_message_with_reason(self, requests_mock, connector):
         m = requests_mock
         m.get(BASE_URI_SLASH + "things", status_code=500, reason="Server Error")
-        resp = connector.request("things", "GET")
-        with pytest.raises(HTTPError, match=r"HTTP error occurred \(500\): Server Error"):
+        resp = connector.request("things", "GET", raise_on_error=False)
+        with pytest.raises(HTTPError, match=r"Code: 500; URL: .*; Reason: Server Error"):
             connector.validate_response(resp)
 
     def test_message_with_text_when_no_reason(self, requests_mock, connector):
         m = requests_mock
         m.get(BASE_URI_SLASH + "things", status_code=500, reason=None, text="boom")
-        resp = connector.request("things", "GET")
-        with pytest.raises(HTTPError, match=r"HTTP error occurred \(500\): boom"):
+        resp = connector.request("things", "GET", raise_on_error=False)
+        with pytest.raises(HTTPError, match=r"Code: 500; URL: .*; Text: boom"):
             connector.validate_response(resp)
 
     def test_message_bare_when_no_reason_or_text(self, requests_mock, connector):
         m = requests_mock
         m.get(BASE_URI_SLASH + "things", status_code=500, reason=None)
-        resp = connector.request("things", "GET")
-        with pytest.raises(HTTPError, match=r"HTTP error occurred \(500\)$"):
+        resp = connector.request("things", "GET", raise_on_error=False)
+        with pytest.raises(HTTPError, match=r"Code: 500; URL:"):
             connector.validate_response(resp)
 
     def test_message_appends_json_body(self, requests_mock, connector):
@@ -271,8 +271,8 @@ class TestValidateResponse:
             reason="Too Many Requests",
             json={"error": "rate limited"},
         )
-        resp = connector.request("things", "GET")
-        with pytest.raises(HTTPError, match=r"json: \{'error': 'rate limited'\}"):
+        resp = connector.request("things", "GET", raise_on_error=False)
+        with pytest.raises(HTTPError, match=r"JSON: \{'error': 'rate limited'\}"):
             connector.validate_response(resp)
 
 

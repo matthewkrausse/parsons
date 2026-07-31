@@ -98,7 +98,7 @@ class TestRetryBehavior:
         )
         connector = make_connector(uri, retries=retry)
 
-        with pytest.raises(ParsonsHTTPError, match=r"HTTP error occurred \(503\)"):
+        with pytest.raises(ParsonsHTTPError, match=r"Code: 503"):
             connector.get("things")
         assert len(ScriptedHandler.requests_seen) == 3  # original + 2 retries
 
