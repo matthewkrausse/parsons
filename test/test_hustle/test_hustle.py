@@ -28,6 +28,28 @@ class TestHustle(unittest.TestCase):
         assert_matching_tables(orgs, Table(expected_json.organizations["items"]))
 
     @requests_mock.Mocker()
+    def test_get_organizations_paginates_via_cursor(self, m):
+        # Hustle keeps returning a cursor and ends the list with the stringy
+        # pagination.hasNextPage flag; the migration must follow the cursor
+        # until hasNextPage is "false" and concatenate every page's items.
+        page1 = {
+            "items": [{"id": "org1"}],
+            "pagination": {"cursor": "CURSOR1", "hasNextPage": "true"},
+        }
+        page2 = {
+            "items": [{"id": "org2"}, {"id": "org3"}],
+            "pagination": {"cursor": "CURSOR2", "hasNextPage": "false"},
+        }
+        m.get(HUSTLE_URI + "organizations", [{"json": page1}, {"json": page2}])
+
+        orgs = self.hustle.get_organizations()
+
+        assert [row["id"] for row in orgs] == ["org1", "org2", "org3"]
+        assert m.call_count == 2
+        # The second request sends the cursor from the first page.
+        assert m.request_history[1].qs["cursor"] == ["cursor1"]
+
+    @requests_mock.Mocker()
     def test_get_organization(self, m):
         m.get(HUSTLE_URI + "organizations/LePEoKzD3", json=expected_json.organization)
         org = self.hustle.get_organization("LePEoKzD3")

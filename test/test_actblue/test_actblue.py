@@ -50,6 +50,17 @@ class TestActBlue(unittest.TestCase):
         assert response["id"] == TEST_POST_RESPONSE["id"]
 
     @requests_mock.Mocker()
+    def test_post_request_raises_on_error_status(self, m):
+        # The verb methods validate the response, so a server error surfaces as
+        # a ParsonsHTTPError (a requests HTTPError subclass) rather than being
+        # silently parsed.
+        from parsons.utilities.api_exceptions import ParsonsHTTPError
+
+        m.post(f"{TEST_URI}/csvs", status_code=500, reason="Server Error")
+        with pytest.raises(ParsonsHTTPError):
+            self.ab.post_request(TEST_CSV_TYPE, TEST_DATE_RANGE_START, TEST_DATE_RANGE_END)
+
+    @requests_mock.Mocker()
     def test_successful_get_download_url(self, m):
         m.get(f"{TEST_URI}/csvs/{TEST_ID}", json=TEST_GET_RESPONSE)
 

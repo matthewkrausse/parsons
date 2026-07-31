@@ -1,8 +1,7 @@
-import urllib.parse
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from oauthlib.oauth2 import BackendApplicationClient, OAuth2Token
+from oauthlib.oauth2 import BackendApplicationClient, OAuth2Token, TokenExpiredError
 from requests import Response
 from requests_oauthlib import OAuth2Session
 
@@ -13,7 +12,8 @@ class OAuth2APIConnector(APIConnector):
     """
     Low level class for authenticated API requests using OAuth2 that other connectors can utilize.
 
-    It extends APIConnector by wrapping the request methods in a server-side OAuth2 client.
+    It extends APIConnector by running all requests through a server-side OAuth2 session, so
+    OAuth2 connectors get the same timeouts, retries, and rate limiting as any other connector.
     Otherwise, it provides the same interface as APIConnector.
 
     """
@@ -30,9 +30,13 @@ class OAuth2APIConnector(APIConnector):
         data_key: str | None = None,
         grant_type: str = "client_credentials",
         authorization_kwargs: dict[str, Any] | None = None,
+        *,
+        timeout: int | float | tuple | None = None,
+        retries: int | None = None,
+        rate_limit_interval: int | float = 0.0,
     ) -> None:
         """
-        Initialize the APIConnector.
+        Initialize the OAuth2APIConnector.
 
         Args:
             uri:
@@ -49,33 +53,38 @@ class OAuth2APIConnector(APIConnector):
             data_key:
                 The name of the key in the response json where the data is contained.
                 Required if the data is nested in the response json
+            grant_type: The OAuth2 grant type. Defaults to ``client_credentials``.
+            authorization_kwargs: Extra parameters passed to the token fetch.
+            timeout: See ``APIConnector``.
+            retries: See ``APIConnector``.
+            rate_limit_interval: See ``APIConnector``.
 
         """
-        super().__init__(
-            uri,
-            headers=headers,
-            pagination_key=pagination_key,
-            data_key=data_key,
-        )
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.token_url = token_url
+        self.grant_type = grant_type
+        self.authorization_kwargs = authorization_kwargs or {}
+        self._fetch_timeout = timeout
 
-        if not authorization_kwargs:
-            authorization_kwargs = {}
-
-        client = BackendApplicationClient(client_id=client_id)
-        client.grant_type = grant_type
-        oauth = OAuth2Session(client=client)
-        self.token = oauth.fetch_token(
-            token_url=token_url,
-            client_id=client_id,
-            client_secret=client_secret,
-            **authorization_kwargs,
-        )
+        self.token = self._fetch_token()
         self.client = OAuth2Session(
             client_id,
             token=self.token,
             auto_refresh_url=auto_refresh_url,
             token_updater=self.token_saver,
-            auto_refresh_kwargs=authorization_kwargs,
+            auto_refresh_kwargs=self.authorization_kwargs,
+        )
+
+        super().__init__(
+            uri,
+            headers=headers,
+            pagination_key=pagination_key,
+            data_key=data_key,
+            timeout=timeout,
+            retries=retries,
+            rate_limit_interval=rate_limit_interval,
+            session=self.client,
         )
 
     def request(
@@ -90,49 +99,55 @@ class OAuth2APIConnector(APIConnector):
         **kwargs,
     ) -> Response:
         """
-        Base request using requests libary.
-
-        Args:
-            url: str
-                The url request string.
-                If ``url`` is a relative URL, it will be joined with the ``uri`` of the ``OAuthAPIConnector`.
-                if ``url`` is an absolute URL, it will be used as is.
-            req_type: str
-                The request type.
-                One of ``GET``, ``POST``, ``PUT``, ``PATCH``, ``DELETE``, or ``OPTIONS``.
-            json:
-                The payload of the request object.
-                By using `json`, it will automatically serialize the dictionary
-            data:
-                The payload of the request object.
-                Used instead of `json` in some instances.
-            params: The parameters to append to the url (e.g. http://myapi.com/things?id=1)
-            raise_on_error:
-                If the request yields an error status code (anything above 400),
-                raise an error. In most cases, this should be ``True``,
-                however in some cases, if you are looping through data,
-                you might want to ignore individual failures.
-            `**kwargs`:
-                Additional keyword arguments to pass to :func:`requests.request`.
-
+        Base request; see ``APIConnector.request``. If the OAuth2 token has
+        expired, a fresh one is fetched and the request is retried. The expiry
+        is detected client-side before anything is sent, so the retry is safe
+        for all request types.
         """
-        full_url = urllib.parse.urljoin(self.uri, url)
+        last_request_at = self._last_request_at
+        try:
+            return super().request(
+                url,
+                req_type,
+                json=json,
+                data=data,
+                params=params,
+                raise_on_error=raise_on_error,
+                **kwargs,
+            )
+        except TokenExpiredError:
+            self.token = self._fetch_token()
+            self.client.token = self.token
+            # The expired-token attempt sent nothing (oauthlib raised before any
+            # bytes left), so restore the throttle clock to avoid a second,
+            # spurious rate_limit_interval wait on the retry.
+            self._last_request_at = last_request_at
+            return super().request(
+                url,
+                req_type,
+                json=json,
+                data=data,
+                params=params,
+                raise_on_error=raise_on_error,
+                **kwargs,
+            )
 
-        resp = self.client.request(
-            req_type,
-            full_url,
-            headers=self.headers,
-            auth=self.auth,
-            json=json,
-            data=data,
-            params=params,
-            **kwargs,
+    def _fetch_token(self) -> dict:
+        """Fetch a fresh token from the OAuth2 application."""
+        client = BackendApplicationClient(client_id=self.client_id)
+        client.grant_type = self.grant_type
+        oauth = OAuth2Session(client=client)
+        # authorization_kwargs takes precedence: historically a token-fetch
+        # timeout could only be set by passing authorization_kwargs={"timeout": ...},
+        # so setdefault avoids a duplicate-keyword TypeError for that pattern.
+        fetch_kwargs = dict(self.authorization_kwargs)
+        fetch_kwargs.setdefault("timeout", self._fetch_timeout)
+        return oauth.fetch_token(
+            token_url=self.token_url,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            **fetch_kwargs,
         )
-
-        if raise_on_error:
-            self.validate_response(resp)
-
-        return resp
 
     def token_saver(self, token: OAuth2Token) -> None:
         """Replace the token in the class instance."""

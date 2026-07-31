@@ -16,6 +16,8 @@ from parsons.pdi.locations import Locations
 from parsons.pdi.questions import Questions
 from parsons.pdi.universes import Universes
 from parsons.utilities import check_env
+from parsons.utilities.api_connector import APIConnector
+from parsons.utilities.auth import ExpiringTokenAuth
 
 logger = logging.getLogger(__name__)
 
@@ -60,26 +62,33 @@ class PDI(
         self.password = check_env.check("PDI_PASSWORD", password)
         self.api_token = check_env.check("PDI_API_TOKEN", api_token)
 
+        # PDI issues a bearer session token from a login endpoint that expires;
+        # ExpiringTokenAuth fetches it lazily on the first request and re-fetches
+        # before expiry (replacing the hand-rolled token + expiry-check logic).
+        self.client = APIConnector(self.base_url, auth=ExpiringTokenAuth(self._fetch_session_token))
+
         super().__init__()
 
-        self._get_session_token()
+    def _fetch_session_token(self):
+        """Log in and return the session token and its remaining lifetime.
 
-    def _get_session_token(self):
-        headers = {
-            "Content-Type": "application/json",
-        }
+        Returns:
+            tuple: ``(token, ttl_seconds)`` for ExpiringTokenAuth.
+        """
         login = {
             "Username": self.username,
             "Password": self.password,
             "ApiToken": self.api_token,
         }
-        res = requests.post(f"{self.base_url}/sessions", json=login, headers=headers)
+        res = requests.post(f"{self.base_url}/sessions", json=login)
         logger.debug(f"{res.status_code} - {res.url}")
         res.raise_for_status()
-        # status_code == 200
         data = res.json()
-        self.session_token = data["AccessToken"]
-        self.session_exp = parse(data["ExpirationDate"])
+        expiration = parse(data["ExpirationDate"])
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=timezone.utc)
+        ttl = (expiration - datetime.now(timezone.utc)).total_seconds()
+        return data["AccessToken"], ttl
 
     def _clean_dict(self, dct):
         if isinstance(dct, list):
@@ -91,26 +100,9 @@ class PDI(
         return dct
 
     def _request(self, url, req_type="GET", post_data=None, args=None, limit=None):
-        # Make sure to have a current token before we make another request
-        now = datetime.now(timezone.utc)
-        if now > self.session_exp:
-            self._get_session_token()
-
         # Based on PDI docs
         # https://api.bluevote.com/docs/index
         LIMIT_MAX = 2000
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.session_token}",
-        }
-
-        request_fn = {
-            "GET": requests.get,
-            "POST": requests.post,
-            "PUT": requests.put,
-            "DELETE": requests.delete,
-        }
 
         if limit and limit <= LIMIT_MAX:
             args = args or {}
@@ -118,11 +110,12 @@ class PDI(
 
         args = self._clean_dict(args) if args else args
         post_data = self._clean_dict(post_data) if post_data else post_data
-        res = request_fn[req_type](url, headers=headers, json=post_data, params=args)
+        # The client (via ExpiringTokenAuth) attaches the bearer token and
+        # refreshes it as needed, and request() validates by default — raising
+        # on any error status before returning here.
+        res = self.client.request(url, req_type, json=post_data, params=args)
         logger.debug(f"{res.url} - {res.status_code}")
         logger.debug(res.request.body)
-
-        res.raise_for_status()
 
         if not res.text:
             return None
@@ -140,6 +133,9 @@ class PDI(
         total_count = res_json.get("totalCount", 0)
         data = res_json["data"]
 
+        # PDI paginates by a 1-indexed "cursor" and reports the total row count.
+        # The page size varies in the limit branch, so this count-driven loop
+        # is kept rather than a shared paginator.
         if not limit:
             # We don't have a limit, so let's get everything
             # Start a page 2 since we already go page 1
@@ -148,7 +144,7 @@ class PDI(
                 args = args or {}
                 args["cursor"] = cursor
                 args["limit"] = LIMIT_MAX
-                res = request_fn[req_type](url, headers=headers, json=post_data, params=args)
+                res = self.client.request(url, req_type, json=post_data, params=args)
 
                 data.extend(res.json()["data"])
 
@@ -164,7 +160,7 @@ class PDI(
                 args = args or {}
                 args["cursor"] = cursor
                 args["limit"] = min(LIMIT_MAX, total_need - len(data))
-                res = request_fn[req_type](url, headers=headers, json=post_data, params=args)
+                res = self.client.request(url, req_type, json=post_data, params=args)
 
                 data.extend(res.json()["data"])
 

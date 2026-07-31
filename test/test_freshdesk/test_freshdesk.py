@@ -26,6 +26,28 @@ class TestFreshdesk(unittest.TestCase):
         self.fd.get_tickets()
 
     @requests_mock.Mocker()
+    def test_get_tickets_paginated(self, m):
+        # A Link header for the "next" page must be followed and every page's
+        # records concatenated into one table.
+        page2_url = self.fd.uri + "tickets?page=2"
+        m.get(
+            self.fd.uri + "tickets",
+            [
+                {
+                    "json": [{"id": 1}, {"id": 2}],
+                    "headers": {"Link": f'<{page2_url}>; rel="next"'},
+                },
+                {"json": [{"id": 3}]},
+            ],
+        )
+        tbl = self.fd.get_tickets()
+        assert tbl.num_rows == 3
+        assert tbl["id"] == [1, 2, 3]
+        # First request carries per_page; the second follows the Link URL.
+        assert m.request_history[0].qs["per_page"] == ["100"]
+        assert m.request_history[1].qs["page"] == ["2"]
+
+    @requests_mock.Mocker()
     def test_get_companies(self, m):
         # Test that tickets are returned correctly.
         m.get(self.fd.uri + "companies", json=expected_json.test_company)

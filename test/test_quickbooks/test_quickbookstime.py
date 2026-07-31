@@ -42,6 +42,21 @@ class TestQuickBooksTime(unittest.TestCase):
         assert result[0]["id"] == list(mock_groups_data["results"]["groups"].values())[0]["id"]
 
     @requests_mock.Mocker()
+    def test_qb_get_request_paginates_on_more_flag(self, mock_request):
+        # A "more": true response must trigger the next page; records from
+        # every page are concatenated and the page number increments.
+        page1 = {"results": {"groups": {"1": {"id": 1}, "2": {"id": 2}}}, "more": True}
+        page2 = {"results": {"groups": {"3": {"id": 3}}}, "more": False}
+        mock_request.get(requests_mock.ANY, [{"json": page1}, {"json": page2}])
+
+        result = self.qb.qb_get_request(end_point="groups", querystring={"page": 1})
+
+        assert [row["id"] for row in result] == [1, 2, 3]
+        assert mock_request.call_count == 2
+        assert mock_request.request_history[0].qs["page"] == ["1"]
+        assert mock_request.request_history[1].qs["page"] == ["2"]
+
+    @requests_mock.Mocker()
     def test_get_groups(self, mock_request):
         # Arrange
         mock_request.get(requests_mock.ANY, json=mock_groups_data)
