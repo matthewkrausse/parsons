@@ -2,6 +2,8 @@ import logging
 import time
 from typing import Literal
 
+from requests.auth import HTTPBasicAuth
+
 from parsons import Table
 from parsons.utilities import check_env
 from parsons.utilities.api_connector import APIConnector
@@ -45,8 +47,10 @@ class ActBlue:
         actblue_uri=None,
         max_retries=None,
     ):
-        self.actblue_client_uuid = check_env.check("ACTBLUE_CLIENT_UUID", actblue_client_uuid)
-        self.actblue_client_secret = check_env.check("ACTBLUE_CLIENT_SECRET", actblue_client_secret)
+        self.actblue_client_uuid: str = check_env.check("ACTBLUE_CLIENT_UUID", actblue_client_uuid)
+        self.actblue_client_secret: str = check_env.check(
+            "ACTBLUE_CLIENT_SECRET", actblue_client_secret
+        )
         self.uri = (
             check_env.check("ACTBLUE_URI", actblue_uri, optional=True) or ACTBLUE_API_ENDPOINT
         )
@@ -55,7 +59,7 @@ class ActBlue:
         }
         self.client = APIConnector(
             self.uri,
-            auth=(self.actblue_client_uuid, self.actblue_client_secret),
+            auth=HTTPBasicAuth(self.actblue_client_uuid, self.actblue_client_secret),
             headers=self.headers,
         )
         self.max_retries = check_env.check("ACTBLUE_MAX_RETRIES", max_retries, optional=True)
@@ -97,7 +101,6 @@ class ActBlue:
             identifier for the CSV being generated.
 
         """
-
         body = {
             "csv_type": csv_type,
             "date_range_start": date_range_start,
@@ -140,7 +143,6 @@ class ActBlue:
             it expires, it could be used by anyone to download the CSV.
 
         """
-
         logger.info("Request received. Please wait while ActBlue generates this data.")
         download_url = None
         tries = 0
@@ -190,7 +192,7 @@ class ActBlue:
                 Any additional arguments will be passed to Table.from_csv as keyword arguments.
 
         Returns:
-            parsons.Table
+            Table
                 Contents of the generated contribution CSV.
                 List of columns:
 
@@ -294,7 +296,6 @@ class ActBlue:
                 - Managed Entity Committee Name
 
         """
-
         post_request_response = self.post_request(csv_type, date_range_start, date_range_end)
         csv_id = post_request_response["id"]
         download_url = self.poll_for_download_url(csv_id)

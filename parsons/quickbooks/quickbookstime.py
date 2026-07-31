@@ -20,7 +20,7 @@ class QuickBooksTime:
         token: str
             A valid QuickBooksTime Auth Token. Not required if ``QB_AUTH_TOKEN`` env
             variable set.
-            [Find instructions to create yours here](https://developer.intuit.com/app/developer/qbo/docs/develop/authentication-and-authorization/oauth-2.0) # noqa: E501
+            [Find instructions to create yours here](https://developer.intuit.com/app/developer/qbo/docs/develop/authentication-and-authorization/oauth-2.0) # noqa E501 line-too-long
 
             [QuickBooksTime API Documentation](https://tsheetsteam.github.io/api_docs/#introduction)
 
@@ -34,8 +34,7 @@ class QuickBooksTime:
     # Helper functions
 
     def qb_get_request(self, end_point: str, querystring=None):
-        """This function handles the pagination of the request"""
-
+        """Handle request pagination."""
         querystring = dict(querystring or {})
         querystring.setdefault("page", 1)
 
@@ -67,46 +66,46 @@ class QuickBooksTime:
         page=1,
     ):
         """
-            This function allows you to call the /groups endpoint of the QuickBooksTime Time API.
-            All Args are optional.
+        Call the ``/groups`` endpoint of the QuickBooksTime Time API.
+
+        All Args are optional.
 
         Args:
-                ids: Int
-                    Comma separated list of one or more group ids you'd like to filter on.
+            ids: Int
+                Comma separated list of one or more group ids you'd like to filter on.
 
-                active: String
-                    'yes', 'no', or 'both'. Default is 'yes'.
+            active: String
+                'yes', 'no', or 'both'. Default is 'yes'.
 
-                manager_ids: Int
-                    Comma separated list of one or more manager ids you'd like to filter on.
+            manager_ids: Int
+                Comma separated list of one or more manager ids you'd like to filter on.
 
-                name: String
-                    Comma separated list of one or more group names you'd like to filter on.
+            name: String
+                Comma separated list of one or more group names you'd like to filter on.
 
-                modified_before: String
-                    Only groups modified before this date/time will be returned,
-                    in ISO 8601 format (YYYY-MM-DDThh:mm:ss±hh:mm)
+            modified_before: String
+                Only groups modified before this date/time will be returned,
+                in ISO 8601 format (YYYY-MM-DDThh:mm:ss±hh:mm)
 
-                modified_since: String
-                    Only groups modified since this date/time will be returned,
-                    in ISO 8601 format (YYYY-MM-DDThh:mm:ss±hh:mm)
+            modified_since: String
+                Only groups modified since this date/time will be returned,
+                in ISO 8601 format (YYYY-MM-DDThh:mm:ss±hh:mm)
 
-                supplemental_data: String
-                    'yes' or 'no'. Default is 'yes'.
-                    Indicates whether supplemental data should be returned.
+            supplemental_data: String
+                'yes' or 'no'. Default is 'yes'.
+                Indicates whether supplemental data should be returned.
 
-                limit: Int
-                    Represents how many results you'd like to retrieve per request (page).
-                    Default is 200. Max is 200.
+            limit: Int
+                Represents how many results you'd like to retrieve per request (page).
+                Default is 200. Max is 200.
 
-                page: Int
-                    Represents the page of results you'd like to retrieve.
+            page: Int
+                Represents the page of results you'd like to retrieve.
 
         Returns:
-            Parsons Table
+            Table
 
         """
-
         querystring = {
             "ids": ids,
             "active": active,
@@ -143,7 +142,7 @@ class QuickBooksTime:
         page=1,
     ):
         """
-        This function allows you to call the /jobcodes endpoint of the QuickBooksTime Time API.
+        Call the ``/jobcodes`` endpoint of the QuickBooksTime Time API.
 
         Args:
             ids: Int
@@ -202,10 +201,9 @@ class QuickBooksTime:
                 Represents the page of results you'd like to retrieve. Default is 1.
 
         Returns:
-            Parsons Table
+            Table
 
         """
-
         querystring = {
             "ids": ids,
             "parent_ids": parent_ids,
@@ -247,7 +245,7 @@ class QuickBooksTime:
         start_date="1900-01-01",
     ):
         """
-        This function allows you to call the /timesheets endpoint of the QuickBooksTime Time API.
+        Call the ``/timesheets`` endpoint of the QuickBooksTime Time API.
 
         Params:
             ids: Int
@@ -312,10 +310,9 @@ class QuickBooksTime:
                 Represents the page of results you'd like to retrieve. Default is 1.
 
         Returns:
-            Parsons Table
+            Table
 
         """
-
         querystring = {
             "ids": ids,
             "jobcode_ids": jobcode_ids,
@@ -361,7 +358,7 @@ class QuickBooksTime:
         page=1,
     ):
         """
-        This function allows you to call the /users endpoint of the QuickBooksTime Time API.
+        Call the ``/users`` endpoint of the QuickBooksTime Time API.
 
         Args:
             ids: Int
@@ -419,11 +416,10 @@ class QuickBooksTime:
                 Represents the page of results you'd like to retrieve. Default is 1.
 
         Returns:
-            Parsons Table
+            Table
             See Parsons Table for output options.
 
         """
-
         querystring = {
             "ids": ids,
             "not_ids": not_ids,
@@ -461,8 +457,7 @@ class QuickBooksTime:
         page=1,
     ):
         """
-        This function allows you to call the /schedule_calendars endpoint
-        of the QuickBooksTime Time API.
+        Call the ``/schedule_calendars`` endpoint of the QuickBooksTime Time API.
 
         Args:
             ids: Int
@@ -494,7 +489,6 @@ class QuickBooksTime:
             Needed for calling the /schedule_events endpoint
 
         """
-
         endpoint = "schedule_calendars"
 
         querystring = {
@@ -536,8 +530,7 @@ class QuickBooksTime:
         page=1,
     ):
         """
-        This function allows you to call the /schedule_events endpoint
-        of the QuickBooksTime Time API.
+        Call the ``/schedule_events`` endpoint of the QuickBooksTime Time API.
 
         Args:
             ids: Int
@@ -611,11 +604,10 @@ class QuickBooksTime:
                 Represents the page of results you'd like to retrieve. Default is 1.
 
         Returns:
-            Parsons Table
+            Table
             See Parsons Table for output options.
 
         """
-
         if schedule_calendar_ids is None:
             schedule_calendar_ids = self.get_schedule_calendars_list()
 
@@ -660,7 +652,7 @@ class QuickBooksTime:
         page=1,
     ):
         """
-        This function allows you to call the /geolocations endpoint of the QuickBooksTime Time API.
+        Call the ``/geolocations`` endpoint of the QuickBooksTime Time API.
 
         Args:
             ids: Int
@@ -691,11 +683,10 @@ class QuickBooksTime:
                 Represents the page of results you'd like to retrieve. Default is 1.
 
         Returns:
-            Parsons Table
+            Table
             See Parsons Table for output options.
 
         """
-
         endpoint = "geolocations"
 
         querystring = {

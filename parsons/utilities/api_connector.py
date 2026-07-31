@@ -1,12 +1,15 @@
 import logging
 import time
 import urllib.parse
-from collections.abc import Iterator
-from typing import Literal
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from typing import Any, Literal, overload
 
 import requests
 import urllib3
 from requests.adapters import HTTPAdapter
+from requests.auth import AuthBase
+from requests.exceptions import HTTPError
+from requests.models import PreparedRequest
 from simplejson.errors import JSONDecodeError
 
 from parsons import Table
@@ -18,6 +21,26 @@ from parsons.utilities.api_exceptions import (
 from parsons.utilities.pagination import PageRequest, Paginator
 
 logger = logging.getLogger(__name__)
+
+_Auth = tuple[str, str] | AuthBase | Callable[[PreparedRequest], PreparedRequest]
+_Headers = Mapping[str, str | bytes | None]
+_Data = (
+    Iterable[bytes]
+    | str
+    | bytes
+    | list[tuple[Any, Any]]
+    | tuple[tuple[Any, Any], ...]
+    | Mapping[Any, Any]
+)
+_ParamsMappingKeyType = str | bytes | int | float
+_ParamsMappingValueType = str | bytes | int | float | Iterable[str | bytes | int | float] | None
+_Params = (
+    Mapping[_ParamsMappingKeyType, _ParamsMappingValueType]
+    | tuple[_ParamsMappingKeyType, _ParamsMappingValueType]
+    | Iterable[tuple[_ParamsMappingKeyType, _ParamsMappingValueType]]
+    | str
+    | bytes
+)
 
 #: The standard timeout for connectors that opt in: 10s to connect, 120s
 #: between bytes of the response. The read timeout is between-bytes, not
@@ -67,58 +90,64 @@ def default_retry(total: int = 3) -> urllib3.util.Retry:
 
 class APIConnector:
     """
-    The API Connector is a low level class for API requests that other connectors
-    can utilize. It is understood that there are many standards for REST APIs and it will be
-    difficult to create a universal connector. The goal of this class is create series
-    of utilities that can be mixed and matched to, hopefully, meet the needs of the specific
-    API.
+    Low level class for API requests that other connectors can utilize.
 
-    Args:
-        uri: str
-            The base uri for the api. Must include a trailing '/' (e.g. ``http://myapi.com/v1/``)
-        headers: dict
-            The request headers
-        auth: dict
-            The request authorization parameters
-        pagination_key: str
-            The name of the key in the response json where the pagination url is
-            located. Required for pagination.
-        data_key: str
-            The name of the key in the response json where the data is contained. Required
-            if the data is nested in the response json
-        timeout: int or float or tuple
-            Seconds before a request times out, either a single number or a
-            ``(connect, read)`` tuple (see ``DEFAULT_TIMEOUT``). Defaults to ``None``
-            (no timeout) for backwards compatibility.
-        retries: int or urllib3.util.Retry
-            Retry transient failures automatically. Pass an int for the standard
-            policy (see :func:`default_retry`) with that many retries, or a
-            ``urllib3.util.Retry`` for full control. Defaults to ``None`` (no retries).
-        rate_limit_interval: int or float
-            Minimum seconds between requests, for APIs with strict rate limits.
-            Defaults to ``0`` (no throttling).
-        session: requests.Session
-            A session for all requests to be made through. Defaults to a new
-            ``requests.Session``; ``OAuth2APIConnector`` passes its OAuth2 session here.
-
-    Returns:
-        APIConnector class
+    It is understood that there are many standards for REST APIs and
+    it will be difficult to create a universal connector.
+    The goal of this class is create series of utilities that can be
+    mixed and matched to, hopefully, meet the needs of the specific API.
 
     """
 
     def __init__(
         self,
-        uri,
-        headers=None,
-        auth=None,
-        pagination_key=None,
-        data_key=None,
+        uri: str,
+        headers: _Headers | None = None,
+        auth: _Auth | None = None,
+        pagination_key: str | None = None,
+        data_key: str | None = None,
         *,
-        timeout=None,
-        retries=None,
-        rate_limit_interval=0.0,
-        session=None,
-    ):
+        timeout: int | float | tuple | None = None,
+        retries: int | urllib3.util.Retry | None = None,
+        rate_limit_interval: int | float = 0.0,
+        session: requests.Session | None = None,
+    ) -> None:
+        """
+        Initialize the APIConnector.
+
+        Args:
+            uri:
+                The base uri for the api.
+                Must include a trailing ``/``.
+                E.g. ``http://myapi.com/v1/``.
+            headers: The request headers
+            auth: The request authorization parameters
+            pagination_key:
+                The name of the key in the response json
+                where the pagination url is located.
+                Required for pagination.
+            data_key:
+                The name of the key in the response json
+                where the data is contained.
+                Required if the data is nested in the response json.
+            timeout:
+                Seconds before a request times out, either a single number or a
+                ``(connect, read)`` tuple (see ``DEFAULT_TIMEOUT``). Defaults to
+                ``None`` (no timeout) for backwards compatibility.
+            retries:
+                Retry transient failures automatically. Pass an int for the
+                standard policy (see :func:`default_retry`) with that many
+                retries, or a ``urllib3.util.Retry`` for full control. Defaults
+                to ``None`` (no retries).
+            rate_limit_interval:
+                Minimum seconds between requests, for APIs with strict rate
+                limits. Defaults to ``0`` (no throttling).
+            session:
+                A session for all requests to be made through. Defaults to a new
+                ``requests.Session``; ``OAuth2APIConnector`` passes its OAuth2
+                session here.
+
+        """
         # Add a trailing slash if its missing
         if not uri.endswith("/"):
             uri = uri + "/"
@@ -144,42 +173,49 @@ class APIConnector:
 
     def request(
         self,
-        url,
+        url: str,
         req_type: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        json=None,
-        data=None,
-        params=None,
-        headers=None,
-        timeout=_UNSET,
+        *,
+        json: Any | None = None,
+        data: _Data | None = None,
+        params: _Params | None = None,
+        headers: _Headers | None = None,
+        timeout: Any = _UNSET,
+        raise_on_error: bool = True,
         **kwargs,
-    ):
+    ) -> requests.Response:
         """
         Base request using requests libary.
 
         Args:
-            url: str
-                The url request string; if ``url`` is a relative URL, it will be joined with
-                the ``uri`` of the ``APIConnector`; if ``url`` is an absolute URL, it will
-                be used as is.
-            req_type: str
-                The request type. One of GET, POST, PUT, PATCH, DELETE, OPTIONS
-            json: dict
-                The payload of the request object. By using json, it will automatically
-                serialize the dictionary
-            data: str or byte or dict
-                The payload of the request object. Use instead of json in some instances.
-            params: dict
-                The parameters to append to the url (e.g. http://myapi.com/things?id=1)
-            headers: dict
+            url:
+                The url request string.
+                If ``url`` is a relative URL,
+                it will be joined with the ``uri`` of the ``APIConnector`.
+                If ``url`` is an absolute URL,
+                it will be used as is.
+            req_type: The request type.
+            json:
+                The payload of the request object.
+                By using json, it will automatically serialize the dictionary.
+            data:
+                The payload of the request object.
+                Use instead of json in some instances.
+            params:
+                The parameters to append to the url.
+                E.g. ``http://myapi.com/things?id=1``
+            headers:
                 Headers for this request only, merged over the connector's headers.
-            timeout: int or float or tuple
+            timeout:
                 Timeout for this request only, overriding the connector's timeout.
-            **kwargs:
-                Additional arguments passed through to ``requests`` (e.g. ``files=``,
-                ``stream=``).
-
-        Returns:
-            requests response
+            raise_on_error:
+                If the request yields an error status code (anything above 400),
+                raise an error. In most cases, this should be ``True``,
+                however in some cases, if you are looping through data,
+                you might want to ignore individual failures.
+            `**kwargs`:
+                Additional keyword arguments to pass to
+                :meth:`requests.Session.request` (e.g. ``files=``, ``stream=``).
 
         """
         full_url = urllib.parse.urljoin(self.uri, url)
@@ -190,7 +226,7 @@ class APIConnector:
 
         self._throttle()
 
-        return self.session.request(
+        resp = self.session.request(
             req_type,
             full_url,
             headers=merged_headers,
@@ -202,7 +238,12 @@ class APIConnector:
             **kwargs,
         )
 
-    def get(self, url, *, params=None, **kwargs) -> requests.Response:
+        if raise_on_error:
+            self.validate_response(resp)
+
+        return resp
+
+    def get(self, url: str, *, params: _Params | None = None, **kwargs) -> requests.Response:
         """
         Make a GET request and return the validated response.
 
@@ -211,114 +252,72 @@ class APIConnector:
         response for the parsed body.
 
         Args:
-            url: str
-                A relative or absolute url for the api request
-            params: dict
-                The request parameters
-            **kwargs:
-                Additional arguments passed through to :meth:`request`
+            url: A relative or absolute url for the api request.
+            params: The request parameters.
+            `**kwargs`: Additional arguments passed through to :meth:`request`.
+
         Returns:
             requests.Response
 
         """
-        resp = self.request(url, "GET", params=params, **kwargs)
-        self.validate_response(resp)
-        return resp
+        return self.request(url, "GET", params=params, **kwargs)
 
-    def post(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
-        """
-        Make a POST request and return the validated response.
+    def post(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        json: Any | None = None,
+        **kwargs,
+    ) -> requests.Response:
+        """Make a POST request and return the validated response (see :meth:`get`)."""
+        return self.request(url, "POST", params=params, data=data, json=json, **kwargs)
 
-        Args:
-            url: str
-                A relative or absolute url for the api request
-            params: dict
-                The request parameters
-            data: str or file
-                A data object to post
-            json: dict
-                A JSON object to post
-            **kwargs:
-                Additional arguments passed through to :meth:`request`
-        Returns:
-            requests.Response
+    def put(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        json: Any | None = None,
+        **kwargs,
+    ) -> requests.Response:
+        """Make a PUT request and return the validated response (see :meth:`get`)."""
+        return self.request(url, "PUT", params=params, data=data, json=json, **kwargs)
 
-        """
-        resp = self.request(url, "POST", params=params, data=data, json=json, **kwargs)
-        self.validate_response(resp)
-        return resp
+    def patch(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        json: Any | None = None,
+        **kwargs,
+    ) -> requests.Response:
+        """Make a PATCH request and return the validated response (see :meth:`get`)."""
+        return self.request(url, "PATCH", params=params, data=data, json=json, **kwargs)
 
-    def put(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
-        """
-        Make a PUT request and return the validated response.
-
-        Args:
-            url: str
-                A relative or absolute url for the api request
-            params: dict
-                The request parameters
-            data: str or file
-                A data object to put
-            json: dict
-                A JSON object to put
-            **kwargs:
-                Additional arguments passed through to :meth:`request`
-        Returns:
-            requests.Response
-
-        """
-        resp = self.request(url, "PUT", params=params, data=data, json=json, **kwargs)
-        self.validate_response(resp)
-        return resp
-
-    def patch(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
-        """
-        Make a PATCH request and return the validated response.
-
-        Args:
-            url: str
-                A relative or absolute url for the api request
-            params: dict
-                The request parameters
-            data: str or file
-                A data object to patch
-            json: dict
-                A JSON object to patch
-            **kwargs:
-                Additional arguments passed through to :meth:`request`
-        Returns:
-            requests.Response
-
-        """
-        resp = self.request(url, "PATCH", params=params, data=data, json=json, **kwargs)
-        self.validate_response(resp)
-        return resp
-
-    def delete(self, url, *, params=None, data=None, json=None, **kwargs) -> requests.Response:
-        """
-        Make a DELETE request and return the validated response.
-
-        Args:
-            url: str
-                A relative or absolute url for the api request
-            params: dict
-                The request parameters
-            data: str or file
-                A data object to send
-            json: dict
-                A JSON object to send
-            **kwargs:
-                Additional arguments passed through to :meth:`request`
-        Returns:
-            requests.Response
-
-        """
-        resp = self.request(url, "DELETE", params=params, data=data, json=json, **kwargs)
-        self.validate_response(resp)
-        return resp
+    def delete(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        json: Any | None = None,
+        **kwargs,
+    ) -> requests.Response:
+        """Make a DELETE request and return the validated response (see :meth:`get`)."""
+        return self.request(url, "DELETE", params=params, data=data, json=json, **kwargs)
 
     def paginate(
-        self, url, paginator: Paginator, *, params=None, max_pages=None, **kwargs
+        self,
+        url: str,
+        paginator: Paginator,
+        *,
+        params: _Params | None = None,
+        max_pages: int | None = None,
+        **kwargs,
     ) -> Iterator[requests.Response]:
         """
         Make a GET request and follow the pagination strategy until the last
@@ -335,19 +334,16 @@ class APIConnector:
                 members.extend(response.json()["members"])
 
         Args:
-            url: str
-                A relative or absolute url for the first page's request
-            paginator: Paginator
-                The pagination strategy, e.g. ``LinkHeaderPaginator()``
-            params: dict
-                The request parameters for the first page
-            max_pages: int
+            url: A relative or absolute url for the first page's request.
+            paginator: The pagination strategy, e.g. ``LinkHeaderPaginator()``.
+            params: The request parameters for the first page.
+            max_pages:
                 If provided, stop after this many pages as a safety valve
                 against endless pagination.
-            **kwargs:
-                Additional arguments passed through to :meth:`request`
+            `**kwargs`: Additional arguments passed through to :meth:`request`.
+
         Returns:
-            Iterator of requests.Response, one per page
+            Iterator of requests.Response, one per page.
 
         """
         page = PageRequest(url, params)
@@ -361,188 +357,289 @@ class APIConnector:
             pages_fetched += 1
             page = paginator.next_page(response, page)
 
-    def get_request(self, url, params=None, return_format="json"):
+    @overload
+    def get_request(
+        self,
+        url: ...,
+        *,
+        params: ... = ...,
+        return_format: Literal["json"] = "json",
+        raise_on_error: ... = ...,
+        **kwargs,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def get_request(
+        self,
+        url: ...,
+        *,
+        params: ... = ...,
+        return_format: Literal["content"],
+        raise_on_error: ... = ...,
+        **kwargs,
+    ) -> bytes: ...
+
+    def get_request(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        return_format: Literal["json", "content"] = "json",
+        raise_on_error: bool = True,
+        **kwargs,
+    ) -> dict | bytes:
         """
         Make a GET request.
 
         Args:
-            url: str
-                A complete and valid url for the api request
-            params: dict
-                The request parameters
+            url: A complete and valid url for the api request.
+            params: The request parameters.
+            raise_on_error:
+                If the request yields an error status code (anything above 400),
+                raise an error. In most cases, this should be ``True``,
+                however in some cases, if you are looping through data,
+                you might want to ignore individual failures.
+            `**kwargs`:
+                Additional keyword arguments to pass to :meth:`request`.
+
         Returns:
-                A requests response object
+            The :meth:`requests.Response.json` from the response if `return_format` is ``json``,
+            or :attr:`requests.Response.content` from the response if `return_format` is ``content``.
+
+        Raises:
+            RuntimeError: If return_format is not ``json`` or ``content``.
 
         """
-
-        r = self.request(url, "GET", params=params)
-        self.validate_response(r)
+        r = self.request(url, "GET", params=params, raise_on_error=raise_on_error, **kwargs)
 
         if return_format == "json":
-            logger.debug(r.json())
             return r.json()
-        elif return_format == "content":
-            return r.content
-        else:
-            raise RuntimeError(f"{return_format} is not a valid format, change to json or content")
 
-    def post_request(self, url, params=None, data=None, json=None, success_codes=None):
+        if return_format == "content":
+            return r.content
+
+        raise RuntimeError(f"{return_format} is not a valid format, change to json or content")
+
+    def post_request(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        json: Any | None = None,
+        success_codes: list[int] | None = None,
+        raise_on_error: bool = True,
+        **kwargs,
+    ) -> dict[str, Any] | int | None:
         """
         Make a POST request.
 
         Args:
-            url: str
-                A complete and valid url for the api request
-            params: dict
-                The request parameters
-            data: str or file
-                A data object to post
-            json: dict
-                A JSON object to post
-            success_codes: int
-                The expected success code to be returned. If not provided, accepts 200, 201, 202, and 204.
+            url: A complete and valid url for the api request
+            params: The request parameters
+            data: A data object to post
+            json: A JSON object to post
+            success_codes:
+                The expected success code to be returned.
+                If not provided, accepts 200, 201, 202, and 204.
+            raise_on_error:
+                If the request yields an error status code (anything above 400),
+                raise an error.
+            `**kwargs`:
+                Additional keyword arguments to pass to :meth:`request`.
 
         Returns:
-            A requests response object
+            If successful, json data from :meth:`requests.Response.json`
+            or :attr:`requests.Response.status_code` as available.
+            ``None`` if the request fails and `raise_on_error` is ``False``.
 
         """
+        r = self.request(
+            url,
+            "POST",
+            params=params,
+            data=data,
+            json=json,
+            raise_on_error=raise_on_error,
+            **kwargs,
+        )
 
         if success_codes is None:
             success_codes = [200, 201, 202, 204]
-        r = self.request(url, "POST", params=params, data=data, json=json)
 
-        # Validate the response and lift up an errors.
-        self.validate_response(r)
-
-        # Check for a valid success code for the POST. Some APIs return messages with the
-        # success code and some do not. Be able to account for both of these types.
         if r.status_code in success_codes:
             if self.json_check(r):
                 return r.json()
-            else:
-                return r.status_code
 
-    def delete_request(self, url, params=None, success_codes=None):
+            return r.status_code
+
+    def delete_request(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        success_codes: list[int] | None = None,
+        raise_on_error: bool = True,
+        **kwargs,
+    ) -> dict[str, Any] | int | None:
         """
         Make a DELETE request.
 
         Args:
-            url: str
-                A complete and valid url for the api request
-            params: dict
-                The request parameters
-            success_codes: int
-                The expected success codes to be returned. If not provided, accepts 200, 201, 204.
+            url: A complete and valid url for the api request
+            params: The request parameters
+            success_codes:
+                The expected success codes to be returned.
+                If not provided, accepts 200, 201, 202, 204.
+            raise_on_error:
+                If the request yields an error status code (anything above 400),
+                raise an error.
+            `**kwargs`:
+                Additional keyword arguments to pass to :meth:`request`.
 
         Returns:
-                A requests response object or status code
+            If successful, json data from :meth:`requests.Response.json`
+            or :attr:`requests.Response.status_code` as available.
+            ``None`` if the request fails and `raise_on_error` is ``False``.
 
         """
+        r = self.request(url, "DELETE", params=params, raise_on_error=raise_on_error, **kwargs)
 
         if success_codes is None:
-            success_codes = [200, 201, 204]
-        r = self.request(url, "DELETE", params=params)
+            success_codes = [200, 201, 202, 204]
 
-        self.validate_response(r)
-
-        # Check for a valid success code for the POST. Some APIs return messages with the
-        # success code and some do not. Be able to account for both of these types.
         if r.status_code in success_codes:
             if self.json_check(r):
                 return r.json()
-            else:
-                return r.status_code
 
-    def put_request(self, url, data=None, json=None, params=None, success_codes=None):
+            return r.status_code
+
+    def put_request(
+        self,
+        url: str,
+        *,
+        data: _Data | None = None,
+        json: Any | None = None,
+        params: _Params | None = None,
+        success_codes: list[int] | None = None,
+        raise_on_error: bool = True,
+        **kwargs,
+    ) -> dict[str, Any] | int | None:
         """
         Make a PUT request.
 
         Args:
-            url: str
-                A complete and valid url for the api request
-            data: str or file
-                A data object to post
-            json: dict
-                A JSON object to post
-            params: dict
-                The request parameters
-            success_codes: int
-                The expected success codes to be returned. If not provided, accepts 200, 201, 204.
+            url: A complete and valid url for the api request
+            data: A data object to post
+            json: A JSON object to post
+            params: The request parameters
+            success_codes:
+                The expected success codes to be returned.
+                If not provided, accepts 200, 201, 202, 204.
+            raise_on_error:
+                If the request yields an error status code (anything above 400),
+                raise an error.
+            `**kwargs`:
+                Additional keyword arguments to pass to :meth:`request`.
 
         Returns:
-                A requests response object
+            If successful, json data from :meth:`requests.Response.json`
+            or :attr:`requests.Response.status_code` as available.
+            ``None`` if the request fails and `raise_on_error` is ``False``.
 
         """
+        r = self.request(
+            url, "PUT", params=params, data=data, json=json, raise_on_error=raise_on_error, **kwargs
+        )
 
         if success_codes is None:
-            success_codes = [200, 201, 204]
-        r = self.request(url, "PUT", params=params, data=data, json=json)
-
-        self.validate_response(r)
+            success_codes = [200, 201, 202, 204]
 
         if r.status_code in success_codes:
             if self.json_check(r):
                 return r.json()
-            else:
-                return r.status_code
 
-    def patch_request(self, url, params=None, data=None, json=None, success_codes=None):
+            return r.status_code
+
+    def patch_request(
+        self,
+        url: str,
+        *,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        json: Any | None = None,
+        success_codes: list[int] | None = None,
+        raise_on_error: bool = True,
+        **kwargs,
+    ) -> dict[str, Any] | int | None:
         """
         Make a PATCH request.
 
         Args:
-            url: str
-                A complete and valid url for the api request
-            params: dict
-                The request parameters
-            data: str or file
-                A data object to post
-            json: dict
-                A JSON object to post
-            success_codes: int
-                The expected success codes to be returned. If not provided, accepts 200, 201, and 204.
+            url: A complete and valid url for the api request
+            params: The request parameters
+            data: A data object to post
+            json: A JSON object to post
+            success_codes:
+                The expected success codes to be returned.
+                If not provided, accepts 200, 201, 202, and 204.
+            raise_on_error:
+                If the request yields an error status code (anything above 400),
+                raise an error.
+            `**kwargs`:
+                Additional keyword arguments to pass to :meth:`request`.
 
         Returns:
-            A requests response object
+            If successful, json data from :meth:`requests.Response.json`
+            or :attr:`requests.Response.status_code` as available.
+            ``None`` if the request fails and `raise_on_error` is ``False``.
 
         """
+        r = self.request(
+            url,
+            "PATCH",
+            params=params,
+            data=data,
+            json=json,
+            raise_on_error=raise_on_error,
+            **kwargs,
+        )
 
         if success_codes is None:
-            success_codes = [200, 201, 204]
-        r = self.request(url, "PATCH", params=params, data=data, json=json)
+            success_codes = [200, 201, 202, 204]
 
-        self.validate_response(r)
-
-        # Check for a valid success code for the POST. Some APIs return messages with the
-        # success code and some do not. Be able to account for both of these types.
         if r.status_code in success_codes:
             if self.json_check(r):
                 return r.json()
-            else:
-                return r.status_code
 
-    def validate_response(self, resp):
+            return r.status_code
+
+    def validate_response(self, resp: requests.Response) -> None:
         """
-        Validate that the response is not an error code. If it is, then raise an error
-        and display the error message.
+        Validate that the response is not an error code.
 
-        The error raised is a subclass of ``requests.exceptions.HTTPError``
-        (see :mod:`parsons.utilities.api_exceptions`) with the response
-        attached as ``.response``.
-
-        Args:
-            resp: object
-                A response object
+        If it is, then raise an error and display the error message. The error
+        is a subclass of ``requests.exceptions.HTTPError`` (see
+        :mod:`parsons.utilities.api_exceptions`) with the response attached as
+        ``.response``; a 429 raises ``RateLimitError`` and a 401 raises
+        ``AuthenticationError``.
 
         """
+        try:
+            resp.raise_for_status()
 
-        if resp.status_code >= 400:
+        except HTTPError as e:
+            message = f"Code: {resp.status_code}; URL: {resp.url}"
+
             if resp.reason:
-                message = f"HTTP error occurred ({resp.status_code}): {resp.reason}"
+                message = f"{message}; Reason: {resp.reason}"
+
             elif resp.text:
-                message = f"HTTP error occurred ({resp.status_code}): {resp.text}"
-            else:
-                message = f"HTTP error occurred ({resp.status_code})"
+                message = f"{message}; Text: {resp.text}"
+
+            # Some errors return JSONs with useful info about the error.
+            if self.json_check(resp):
+                message = f"{message}; JSON: {resp.json()}"
 
             if resp.status_code == 429:
                 error_class = RateLimitError
@@ -551,29 +648,25 @@ class APIConnector:
             else:
                 error_class = ParsonsHTTPError
 
-            # Some errors return JSONs with useful info about the error. Return it if exists.
-            if self.json_check(resp):
-                raise error_class(f"{message}, json: {resp.json()}", response=resp)
-            else:
-                raise error_class(message, response=resp)
+            raise error_class(message, response=resp) from e
 
-    def data_parse(self, resp):
+    @overload
+    def data_parse(self, resp: dict[str, Any]) -> dict[str, Any]: ...
+
+    @overload
+    def data_parse(self, resp: list) -> list: ...
+
+    def data_parse(self, resp: dict[str, Any] | list) -> dict[str, Any] | list:
         """
-        Determines if the response json has nested data. If it is nested, it just returns the
-        data. This is useful in dealing with requests that might return multiple records, while
-        others might return only a single record.
+        Determines if the response json has nested data.
 
-        Args:
-            resp:
-                A response dictionary
-        Returns:
-            dict
-                A dictionary of data.
+        If it is nested, it just returns the data.
+        This is useful in dealing with requests that might return multiple records,
+        while others might return only a single record.
 
         """
-
-        # TODO: Some response jsons are enclosed in a list. Need to deal with unpacking and/or
-        # not assuming that it is going to be a dict.
+        # TODO(jburchard): Some response jsons are enclosed in a list.
+        # Need to deal with unpacking and/or not assuming that it is going to be a dict.
 
         # In some instances responses are just lists.
         if isinstance(resp, list):
@@ -581,49 +674,40 @@ class APIConnector:
 
         if self.data_key and self.data_key in resp:
             return resp[self.data_key]
-        else:
-            return resp
+
+        return resp
 
     # There are many different ways in which APIs indicate whether there is a next page
     # of data following the initial request. The goal is build out a series of utilities
     # that mean most of the most common use cases.
 
-    def next_page_check_url(self, resp):
+    def next_page_check_url(self, resp: dict[str, Any]) -> bool:
         """
-        Check to determine if there is a next page. This requires that the response json
-        contains a pagination key that is empty if there is not a next page.
+        Check to determine if there is a next page.
 
-        Args:
-            resp:
-                A response dictionary
-        `Returns:
-            boolean
+        This requires that the response json contains a pagination key
+        that is empty if there is not a next page.
 
         """
-
         if self.pagination_key and self.pagination_key in resp:
-            if resp[self.pagination_key]:
-                return True
-        else:
-            return False
+            return bool(resp[self.pagination_key])
 
-    def json_check(self, resp):
+        return False
+
+    def json_check(self, resp: requests.Response) -> bool:
         """Check to see if a response has a json included in it."""
-
         try:
             resp.json()
             return True
+
         except JSONDecodeError:
             return False
 
-    def convert_to_table(self, data):
+    def convert_to_table(self, data: list | Any) -> Table:
         """Internal method to create a Parsons table from a data element."""
-        table = None
-        table = Table(data) if type(data) is list else Table([data])
+        return Table(data) if isinstance(data, list) else Table([data])
 
-        return table
-
-    def _throttle(self):
+    def _throttle(self) -> None:
         """Sleep as needed to keep ``rate_limit_interval`` seconds between requests."""
         if self.rate_limit_interval <= 0:
             return
