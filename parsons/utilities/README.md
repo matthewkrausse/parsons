@@ -229,6 +229,23 @@ APIConnector(
 )
 ```
 
+For rate limiting there are two options — pick by what the API actually enforces:
+
+| The API's limit is… | Use | Needs a dependency? |
+|---|---|---|
+| "don't call more often than every N seconds" | `rate_limit_interval=N` | no |
+| a real quota — bursts, or several rates at once | a rate-limiting session via `session=` | yes, [requests-ratelimiter](https://pypi.org/project/requests-ratelimiter/) |
+
+```python
+# Simple spacing — no dependency.
+APIConnector(uri, rate_limit_interval=1.0)
+
+# A real quota: 5 requests/second, bursts allowed, tracked per host.
+from requests_ratelimiter import LimiterSession
+
+APIConnector(uri, session=LimiterSession(per_second=5))
+```
+
 - **`timeout`** — a `(connect, read)` tuple or single number. The read timeout
   is *between bytes*, not total duration, so large downloads are safe; only
   endpoints that take longer than the read timeout to send their **first** byte
@@ -248,6 +265,17 @@ APIConnector(
   connector issues (replaces hand-rolled `time.sleep()` calls). It spaces the
   calls made through `request()`; it does not throttle retries performed inside
   the adapter, which are paced by the retry policy's own backoff.
+- **A rate-limiting session** — for APIs with a real quota, inject a session
+  that enforces it. [requests-ratelimiter](https://pypi.org/project/requests-ratelimiter/)'s
+  `LimiterSession` is a drop-in `requests.Session` that models quotas properly:
+  bursts up to the allowance, several rates at once (`per_second=`,
+  `per_minute=`, …), limits tracked per host, and shareable backends for
+  multi-threaded use. It composes with `retries=` (the retry policy is applied
+  to its adapters without disturbing the limiting). Parsons does not depend on
+  it — install it yourself and pass the session in. Note that
+  `OAuth2APIConnector` supplies its own session, so for OAuth2 connectors use
+  `rate_limit_interval`, or see requests-ratelimiter's mixin support for
+  composing a rate-limited OAuth2 session.
 
 ---
 
