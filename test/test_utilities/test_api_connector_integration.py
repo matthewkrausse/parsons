@@ -72,77 +72,85 @@ def make_connector(uri, **kwargs):
     return connector
 
 
-class TestRetryBehavior:
-    def test_transient_503s_are_retried_until_success(self, local_server):
-        uri = local_server(
-            [
-                (503, {}, 0),
-                (503, {}, 0),
-                (200, {}, 0),
-            ]
-        )
-        retry = urllib3.util.Retry(
-            total=3, backoff_factor=0, status_forcelist=[503], raise_on_status=False
-        )
-        connector = make_connector(uri, retries=retry)
-
-        response = connector.get("things")
-
-        assert response.json() == {"ok": True}
-        assert len(ScriptedHandler.requests_seen) == 3
-
-    def test_exhausted_retries_return_final_response_and_raise_http_error(self, local_server):
-        uri = local_server([(503, {}, 0)])
-        retry = urllib3.util.Retry(
-            total=2, backoff_factor=0, status_forcelist=[503], raise_on_status=False
-        )
-        connector = make_connector(uri, retries=retry)
-
-        with pytest.raises(ParsonsHTTPError, match=r"Code: 503"):
-            connector.get("things")
-        assert len(ScriptedHandler.requests_seen) == 3  # original + 2 retries
-
-    def test_post_is_not_retried_by_default_policy(self, local_server):
-        uri = local_server([(503, {}, 0)])
-        retry = default_retry(3)
-        retry.backoff_factor = 0
-        connector = make_connector(uri, retries=retry)
-
-        with pytest.raises(ParsonsHTTPError):
-            connector.post("things", json={"amount": 100})
-        assert len(ScriptedHandler.requests_seen) == 1
-
-    def test_retry_after_header_is_honored(self, local_server):
-        uri = local_server(
-            [
-                (429, {"Retry-After": "1"}, 0),
-                (200, {}, 0),
-            ]
-        )
-        retry = default_retry(2)
-        retry.backoff_factor = 0
-        connector = make_connector(uri, retries=retry)
-
-        started = time.monotonic()
-        response = connector.get("things")
-        elapsed = time.monotonic() - started
-
-        assert response.json() == {"ok": True}
-        assert len(ScriptedHandler.requests_seen) == 2
-        assert elapsed >= 0.9
+# Retry Behavior
 
 
-class TestTimeoutBehavior:
-    def test_read_timeout_raises(self, local_server):
-        uri = local_server([(200, {}, 1.5)])
-        connector = make_connector(uri, timeout=(5, 0.5))
+def test_transient_503s_are_retried_until_success(local_server):
+    uri = local_server(
+        [
+            (503, {}, 0),
+            (503, {}, 0),
+            (200, {}, 0),
+        ]
+    )
+    retry = urllib3.util.Retry(
+        total=3, backoff_factor=0, status_forcelist=[503], raise_on_status=False
+    )
+    connector = make_connector(uri, retries=retry)
 
-        with pytest.raises(requests.exceptions.ReadTimeout):
-            connector.get("things")
+    response = connector.get("things")
 
-    def test_per_request_timeout_overrides_connector_default(self, local_server):
-        uri = local_server([(200, {}, 1.5)])
-        connector = make_connector(uri, timeout=(5, 0.5))
+    assert response.json() == {"ok": True}
+    assert len(ScriptedHandler.requests_seen) == 3
 
-        response = connector.get("things", timeout=(5, 5))
-        assert response.json() == {"ok": True}
+
+def test_exhausted_retries_return_final_response_and_raise_http_error(local_server):
+    uri = local_server([(503, {}, 0)])
+    retry = urllib3.util.Retry(
+        total=2, backoff_factor=0, status_forcelist=[503], raise_on_status=False
+    )
+    connector = make_connector(uri, retries=retry)
+
+    with pytest.raises(ParsonsHTTPError, match=r"Code: 503"):
+        connector.get("things")
+    assert len(ScriptedHandler.requests_seen) == 3  # original + 2 retries
+
+
+def test_post_is_not_retried_by_default_policy(local_server):
+    uri = local_server([(503, {}, 0)])
+    retry = default_retry(3)
+    retry.backoff_factor = 0
+    connector = make_connector(uri, retries=retry)
+
+    with pytest.raises(ParsonsHTTPError):
+        connector.post("things", json={"amount": 100})
+    assert len(ScriptedHandler.requests_seen) == 1
+
+
+def test_retry_after_header_is_honored(local_server):
+    uri = local_server(
+        [
+            (429, {"Retry-After": "1"}, 0),
+            (200, {}, 0),
+        ]
+    )
+    retry = default_retry(2)
+    retry.backoff_factor = 0
+    connector = make_connector(uri, retries=retry)
+
+    started = time.monotonic()
+    response = connector.get("things")
+    elapsed = time.monotonic() - started
+
+    assert response.json() == {"ok": True}
+    assert len(ScriptedHandler.requests_seen) == 2
+    assert elapsed >= 0.9
+
+
+# Timeout Behavior
+
+
+def test_read_timeout_raises(local_server):
+    uri = local_server([(200, {}, 1.5)])
+    connector = make_connector(uri, timeout=(5, 0.5))
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        connector.get("things")
+
+
+def test_per_request_timeout_overrides_connector_default(local_server):
+    uri = local_server([(200, {}, 1.5)])
+    connector = make_connector(uri, timeout=(5, 0.5))
+
+    response = connector.get("things", timeout=(5, 5))
+    assert response.json() == {"ok": True}
